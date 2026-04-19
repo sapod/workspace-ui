@@ -1,147 +1,86 @@
+import { createOpencodeClient } from "@opencode-ai/sdk"
+
 class OpencodeService {
   constructor() {
-    this._client = null;
-  }
-
-  get client() {
-    if (!this._client) {
-      this._client = this._createClient();
-    }
-    return this._client;
-  }
-
-  _createClient() {
-    return {
-      async health() {
-        const r = await fetch('/global/health');
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async listSessions() {
-        const r = await fetch('/session');
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async getSession(id) {
-        const r = await fetch('/session/' + id);
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async createSession(title) {
-        const r = await fetch('/session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title })
-        });
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async deleteSession(id) {
-        const r = await fetch('/session/' + id, { method: 'DELETE' });
-        if (!r.ok) throw new Error(await r.text());
-        return true;
-      },
-
-      async abortSession(id) {
-        const r = await fetch('/session/' + id + '/abort', { method: 'POST' });
-        if (!r.ok) throw new Error(await r.text());
-        return true;
-      },
-
-      async forkSession(id) {
-        const r = await fetch('/session/' + id + '/fork', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
-        });
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async listMessages(id) {
-        const r = await fetch('/session/' + id + '/message');
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async sendMessage(id, parts) {
-        const r = await fetch('/session/' + id + '/message', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ parts })
-        });
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async getPath() {
-        const r = await fetch('/path');
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      async listFiles(path) {
-        const r = await fetch('/file?path=' + encodeURIComponent(path || ''));
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      },
-
-      getEventUrl() {
-        return '/global/event';
-      }
-    };
+    this._client = createOpencodeClient({
+      baseUrl: "http://localhost:4096",
+    });
   }
 
   async health() {
-    return this.client.health();
+    try {
+      const r = await this._client.session.list();
+      const version = r.data?.[0]?.version || '?';
+      return { ok: true, version };
+    } catch (e) {
+      console.log("Health error:", e);
+      return { ok: false };
+    }
   }
 
   async listSessions() {
-    return this.client.listSessions();
+    const r = await this._client.session.list();
+    return r.data ?? [];
   }
 
   async getSession(id) {
-    return this.client.getSession(id);
+    const r = await this._client.session.get({ id });
+    return r.data;
   }
 
   async createSession(title) {
-    return this.client.createSession(title);
+    const r = await this._client.session.create({ title: title });
+    return r.data;
   }
 
   async deleteSession(id) {
-    return this.client.deleteSession(id);
+    return await this._client.session.delete({ id });
   }
 
   async abortSession(id) {
-    return this.client.abortSession(id);
+    return await this._client.session.abort({ id });
   }
 
   async forkSession(id) {
-    return this.client.forkSession(id);
+    const r = await this._client.session.fork({ id });
+    return r.data;
   }
 
   async listMessages(id) {
-    return this.client.listMessages(id);
+    const r = await this._client.session.messages({
+      path: { id },
+    });
+    return r.data ?? [];
   }
 
   async sendMessage(id, parts) {
-    return this.client.sendMessage(id, parts);
+    console.log("sendMessage called:", id, parts);
+    const r = await this._client.session.prompt({
+      path: { id },
+      body: { parts },
+    });
+    console.log("sendMessage response:", r);
+    return r.data;
   }
 
   async getPath() {
-    return this.client.getPath();
+    const r = await this._client.global.path();
+    return r.data;
   }
 
   async listFiles(path) {
-    return this.client.listFiles(path);
+    const r = await this._client.global.file.list({ path: path || '' });
+    return r.data ?? [];
+  }
+
+  async listModels() {
+    const r = await this._client.config.providers();
+    return r.data ?? [];
   }
 
   getEventUrl() {
-    return this.client.getEventUrl();
+    const base = "http://localhost:4096";
+    return base + "/global/event";
   }
 }
 

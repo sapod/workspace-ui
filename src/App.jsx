@@ -14,6 +14,7 @@ function saveProjects(p) {
 const SLASHES = [
   { cmd: '/new', desc: 'New session in this project' },
   { cmd: '/sessions', desc: 'List sessions' },
+  { cmd: '/models', desc: 'Show available models' },
   { cmd: '/fork', desc: 'Fork current session' },
   { cmd: '/clear', desc: 'Clear context' },
   { cmd: '/export', desc: 'Export messages as JSON' },
@@ -412,7 +413,7 @@ function App() {
   async function refreshSessions() {
     try {
       const r = await oc.listSessions();
-      setOcSessions(Array.isArray(r) ? r : (r?.sessions ?? []));
+      setOcSessions(Array.isArray(r) ? r : []);
     } catch { setOcSessions([]); }
   }
 
@@ -420,7 +421,7 @@ function App() {
     if (!sessId) return;
     try {
       const r = await oc.listMessages(sessId);
-      setMessages(Array.isArray(r) ? r : (r?.messages ?? []));
+      setMessages(Array.isArray(r) ? r : []);
     } catch { setMessages([]); }
   }
 
@@ -473,6 +474,7 @@ function App() {
     setMessages(null);
     setThinking(false);
     setDrawerOpen(false);
+    await refreshSessions();
     await loadMessages(sessId);
   }
 
@@ -492,10 +494,13 @@ function App() {
           `Always cd into \`${proj.path}\` before running shell commands.\n` +
           `Reply only: "Understood. Working in \`${proj.path}\`."`;
         try {
+          console.log("Sending primer to session:", s.id);
           const r = await oc.sendMessage(s.id, [{ type: 'text', text: primer }]);
+          console.log("Primer response:", r);
           setThinking(false);
           await loadMessages(s.id);
-        } catch {
+        } catch (e) {
+          console.log("Primer error:", e);
           setThinking(false);
         }
       }
@@ -511,16 +516,56 @@ function App() {
     const optMsg = { info: { role: 'user', id: '_opt_' + Date.now() }, parts: [{ type: 'text', text }] };
     setMessages(prev => [...(prev ?? []), optMsg]);
 
-    try {
-      const r = await oc.sendMessage(curSessId, [{ type: 'text', text }]);
+    if (evtRef.current) { evtRef.current.close(); }
+    const evtUrl = oc.getEventUrl() + '?sessionId=' + curSessId;
+    const es = new EventSource(evtUrl);
+    evtRef.current = es;
+
+    let assistantMsg = { info: { role: 'assistant', id: '_a_' + Date.now() }, parts: [] };
+    let hasContent = false;
+
+    es.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'content' && d.content?.parts) {
+          assistantMsg.parts = d.content.parts;
+          hasContent = true;
+          setMessages(prev => {
+            const n = [...(prev ?? [])];
+            const last = n[n.length - 1];
+            if (last?.info?.role === 'assistant' && last.info.id === assistantMsg.info.id) {
+              n[n.length - 1] = assistantMsg;
+            } else {
+              n.push(assistantMsg);
+            }
+            return n;
+          });
+        }
+        if (d.type === 'done') {
+          es.close();
+          setThinking(false);
+          evtRef.current = null;
+        }
+      } catch {}
+    };
+
+    es.onerror = () => {
+      es.close();
       setThinking(false);
-      await loadMessages(curSessId);
+      if (!hasContent) loadMessages(curSessId);
+      evtRef.current = null;
+    };
+
+    try {
+      await oc.sendMessage(curSessId, [{ type: 'text', text }]);
     } catch (e) {
+      es.close();
       setThinking(false);
       setMessages(prev => [...(prev ?? []),
         { info: { role: 'assistant', id: '_err_' + Date.now() },
           parts: [{ type: 'text', text: 'Error: ' + e.message }] }
       ]);
+      evtRef.current = null;
     }
   }
 
@@ -537,6 +582,15 @@ function App() {
           ? list.map(s => (s.id === curSessId ? '▸ ' : '  ') + (s.title ?? s.id.slice(0, 12))).join('\n')
           : '  (none)';
         appendSysMsg('Sessions in ' + curProj.name + ':\n' + txt);
+        break;
+      case '/models':
+        try {
+          const mods = await oc.listModels();
+          const txt = Array.isArray(mods) && mods.length > 0
+            ? mods.map(m => '• ' + (m.name || m.id || JSON.stringify(m))).join('\n')
+            : '(no models available)';
+          appendSysMsg('Available models:\n' + txt);
+        } catch (e) { toast('Models error: ' + e.message); }
         break;
       case '/fork':
         if (!curSessId || !curProjId) { toast('No active session'); return; }
@@ -577,12 +631,14 @@ function App() {
     setThinking(false);
   }
 
-  function toggleExpand(id) {
+  async function toggleExpand(id) {
+    const wasExpanded = expandedIds.has(id);
     setExpandedIds(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      wasExpanded ? next.delete(id) : next.add(id);
       return next;
     });
+    if (!wasExpanded) await refreshSessions();
   }
 
   useEffect(() => {

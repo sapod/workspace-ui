@@ -516,56 +516,16 @@ function App() {
     const optMsg = { info: { role: 'user', id: '_opt_' + Date.now() }, parts: [{ type: 'text', text }] };
     setMessages(prev => [...(prev ?? []), optMsg]);
 
-    if (evtRef.current) { evtRef.current.close(); }
-    const evtUrl = oc.getEventUrl() + '?sessionId=' + curSessId;
-    const es = new EventSource(evtUrl);
-    evtRef.current = es;
-
-    let assistantMsg = { info: { role: 'assistant', id: '_a_' + Date.now() }, parts: [] };
-    let hasContent = false;
-
-    es.onmessage = (e) => {
-      try {
-        const d = JSON.parse(e.data);
-        if (d.type === 'content' && d.content?.parts) {
-          assistantMsg.parts = d.content.parts;
-          hasContent = true;
-          setMessages(prev => {
-            const n = [...(prev ?? [])];
-            const last = n[n.length - 1];
-            if (last?.info?.role === 'assistant' && last.info.id === assistantMsg.info.id) {
-              n[n.length - 1] = assistantMsg;
-            } else {
-              n.push(assistantMsg);
-            }
-            return n;
-          });
-        }
-        if (d.type === 'done') {
-          es.close();
-          setThinking(false);
-          evtRef.current = null;
-        }
-      } catch {}
-    };
-
-    es.onerror = () => {
-      es.close();
-      setThinking(false);
-      if (!hasContent) loadMessages(curSessId);
-      evtRef.current = null;
-    };
-
     try {
       await oc.sendMessage(curSessId, [{ type: 'text', text }]);
+      setThinking(false);
+      await loadMessages(curSessId);
     } catch (e) {
-      es.close();
       setThinking(false);
       setMessages(prev => [...(prev ?? []),
         { info: { role: 'assistant', id: '_err_' + Date.now() },
           parts: [{ type: 'text', text: 'Error: ' + e.message }] }
       ]);
-      evtRef.current = null;
     }
   }
 

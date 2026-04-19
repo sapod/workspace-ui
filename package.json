@@ -1,0 +1,16 @@
+{
+  "name": "workspace-ui",
+  "version": "1.0.0",
+  "description": "A mobile-friendly web UI for [opencode](https://opencode.ai) — access your AI coding agent from any browser on your network, including your phone via Tailscale.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "http-proxy-middleware": "^3.0.5"
+  }
+}

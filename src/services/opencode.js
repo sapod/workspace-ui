@@ -13,7 +13,6 @@ class OpencodeService {
       const version = r.data?.[0]?.version || '?';
       return { ok: true, version };
     } catch (e) {
-      console.log("Health error:", e);
       return { ok: false };
     }
   }
@@ -53,13 +52,13 @@ class OpencodeService {
     return r.data ?? [];
   }
 
-  async sendMessage(id, parts) {
-    console.log("sendMessage called:", id, parts);
+  async sendMessage(id, parts, model) {
+    const body = { parts };
+    if (model) body.model = model;
     const r = await this._client.session.prompt({
       path: { id },
-      body: { parts },
+      body,
     });
-    console.log("sendMessage response:", r);
     return r.data;
   }
 
@@ -74,8 +73,21 @@ class OpencodeService {
   }
 
   async listModels() {
-    const r = await this._client.config.providers();
-    return r.data ?? [];
+    try {
+      const r = await this._client.config.providers();
+      const provs = r.data?.providers ?? [];
+      const models = [];
+      for (const p of provs) {
+        const pModels = p.models ? Object.keys(p.models) : [];
+        for (const m of pModels) {
+          models.push({ provider: p.id, name: m });
+        }
+      }
+      return models;
+    } catch (e) {
+      await this._client.tui.openModels();
+      return [];
+    }
   }
 
   getEventUrl() {

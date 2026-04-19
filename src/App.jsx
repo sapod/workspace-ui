@@ -112,6 +112,16 @@ function MessageBubble({ msg }) {
     );
   }
 
+  if (role === 'system') {
+    const text = parts.find(p => p.type === 'text')?.text ?? '';
+    if (!text) return null;
+    return (
+      <div className="msg is-system">
+        <RichText text={text} className="bub-sys" />
+      </div>
+    );
+  }
+
   if (role === 'assistant') {
     return (
       <div className="msg">
@@ -122,7 +132,6 @@ function MessageBubble({ msg }) {
           if (p.type === 'tool') return <ToolBlock key={i} inv={{ toolName: p.tool, result: p.state?.output, args: p.state?.input }} />;
           if (p.type === 'tool-invocation') return <ToolBlock key={i} inv={p.toolInvocation || {}} />;
           if (p.type === 'step-start' || p.type === 'step-finish') return null;
-          console.log("Unknown part type:", p.type, p);
           return null;
         })}
       </div>
@@ -158,7 +167,7 @@ function SlashMenu({ query, selIdx, onSelect }) {
   );
 }
 
-function MessageInput({ onSend, disabled }) {
+function MessageInput({ onSend, disabled, selectedModel }) {
   const [text, setText] = useState('');
   const [focused, setFocused] = useState(false);
   const [hist, setHist] = useState([]);
@@ -240,6 +249,7 @@ function MessageInput({ onSend, disabled }) {
             onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
           <div className="inp-foot">
             <span className="inp-hint"><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> history</span>
+            {selectedModel && <span className="inp-model">{selectedModel.name}</span>}
             <button className="send-btn" disabled={disabled || !text.trim()} onClick={submit}>Send ↵</button>
           </div>
         </div>
@@ -387,6 +397,65 @@ function NewProjectModal({ open, onClose, onDone, toast }) {
   );
 }
 
+function ModelPickerModal({ open, onClose, models, onSelect }) {
+  const [search, setSearch] = useState('');
+  const [selIdx, setSelIdx] = useState(0);
+  const listRef = useRef();
+
+  useEffect(() => {
+    if (open) { setSearch(''); setSelIdx(0); }
+  }, [open]);
+
+  const filtered = models.filter(m => 
+    (m.provider + '/' + m.name).toLowerCase().includes(search.toLowerCase())
+  );
+
+  function handleKey(e) {
+    if (!filtered.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSelIdx(i => Math.min(i + 1, filtered.length - 1)); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setSelIdx(i => Math.max(i - 1, 0)); return; }
+    if (e.key === 'Enter') { e.preventDefault(); onSelect(filtered[selIdx]); return; }
+    if (e.key === 'Escape') { onClose(); return; }
+  }
+
+  useEffect(() => {
+    if (listRef.current && filtered[selIdx]) {
+      listRef.current.children[selIdx]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [selIdx]);
+
+  if (!open) return null;
+
+  return (
+    <div className="overlay open" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="mbox">
+        <div className="mhdr">
+          <span className="m-title">Select Model</span>
+          <button className="m-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="mbody">
+          <input className="model-search" autoFocus placeholder="Search models..."
+            value={search} onChange={e => { setSearch(e.target.value); setSelIdx(0); }}
+            onKeyDown={handleKey} />
+          <div className="model-list" ref={listRef}>
+            {filtered.map((m, i) => (
+              <div key={m.provider + '/' + m.name} className={`model-row${i === selIdx ? ' sel' : ''}`}
+                onClick={() => onSelect(m)}>
+                <span className="model-prov">{m.provider}</span>
+                <span className="model-name">{m.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="mfoot">
+          <button className="btn-cancel" onClick={onClose}>Cancel</button>
+          <button className="btn-ok" onClick={() => onSelect(filtered[selIdx])}>Select</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const { toast, toastEl } = useToast();
   const [status, setStatus] = useState({ ok: false, label: 'connecting…' });
@@ -399,6 +468,9 @@ function App() {
   const [thinking, setThinking] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [newProjOpen, setNewProjOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState({ provider: 'opencode', name: 'big-pickle' });
   const evtRef = useRef(null);
 
   async function boot() {
@@ -498,13 +570,10 @@ function App() {
           `Always cd into \`${proj.path}\` before running shell commands.\n` +
           `Reply only: "Understood. Working in \`${proj.path}\`."`;
         try {
-          console.log("Sending primer to session:", s.id);
-          const r = await oc.sendMessage(s.id, [{ type: 'text', text: primer }]);
-          console.log("Primer response:", r);
+          const r = await oc.sendMessage(s.id, [{ type: 'text', text: primer }], null);
           setThinking(false);
           await loadMessages(s.id);
         } catch (e) {
-          console.log("Primer error:", e);
           setThinking(false);
         }
       }
@@ -515,13 +584,17 @@ function App() {
   async function handleSend({ text, slash }) {
     if (slash) { await handleSlash(slash); return; }
     if (!text || !curSessId || thinking) return;
+    await doSend(text);
+  }
 
+  async function doSend(text, model) {
     setThinking(true);
     const optMsg = { info: { role: 'user', id: '_opt_' + Date.now() }, parts: [{ type: 'text', text }] };
     setMessages(prev => [...(prev ?? []), optMsg]);
 
+    const modelOverride = model || selectedModel;
     try {
-      await oc.sendMessage(curSessId, [{ type: 'text', text }]);
+      await oc.sendMessage(curSessId, [{ type: 'text', text }], modelOverride ? { providerID: modelOverride.provider, modelID: modelOverride.name } : null);
       setThinking(false);
       await loadMessages(curSessId);
     } catch (e) {
@@ -548,12 +621,11 @@ function App() {
         appendSysMsg('Sessions in ' + curProj.name + ':\n' + txt);
         break;
       case '/models':
+        if (!curSessId) { toast('Select a session first'); return; }
         try {
           const mods = await oc.listModels();
-          const txt = Array.isArray(mods) && mods.length > 0
-            ? mods.map(m => '• ' + (m.name || m.id || JSON.stringify(m))).join('\n')
-            : '(no models available)';
-          appendSysMsg('Available models:\n' + txt);
+          setAvailableModels(mods);
+          setModelPickerOpen(true);
         } catch (e) { toast('Models error: ' + e.message); }
         break;
       case '/fork':
@@ -710,6 +782,7 @@ function App() {
         <MessageInput
           onSend={handleSend}
           disabled={!curSessId || thinking}
+          selectedModel={selectedModel}
         />
       </div>
 
@@ -718,6 +791,17 @@ function App() {
         onClose={() => setNewProjOpen(false)}
         onDone={addProject}
         toast={toast}
+      />
+
+      <ModelPickerModal
+        open={modelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        models={availableModels}
+        onSelect={model => {
+          setModelPickerOpen(false);
+          setSelectedModel(model);
+          toast('Model set to ' + model.provider + '/' + model.name);
+        }}
       />
 
       {toastEl}

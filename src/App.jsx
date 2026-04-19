@@ -118,7 +118,11 @@ function MessageBubble({ msg }) {
         <div className="msg-who who-ai">opencode</div>
         {parts.map((p, i) => {
           if (p.type === 'text') return <RichText key={i} text={p.text || ''} className="bub-ai" />;
+          if (p.type === 'reasoning') return <div key={i} className="reasoning">{p.text}</div>;
+          if (p.type === 'tool') return <ToolBlock key={i} inv={{ toolName: p.tool, result: p.state?.output, args: p.state?.input }} />;
           if (p.type === 'tool-invocation') return <ToolBlock key={i} inv={p.toolInvocation || {}} />;
+          if (p.type === 'step-start' || p.type === 'step-finish') return null;
+          console.log("Unknown part type:", p.type, p);
           return null;
         })}
       </div>

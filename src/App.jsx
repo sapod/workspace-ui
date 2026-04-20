@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import oc from './services/opencode';
+import { git } from './services/git';
 import { GitDiff } from './components/GitDiff';
 import './App.css';
 
@@ -489,6 +490,7 @@ function App() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState({ provider: 'opencode', name: 'big-pickle' });
+  const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null });
   const evtRef = useRef(null);
 
   async function boot() {
@@ -597,6 +599,51 @@ function App() {
       }
       toast('Session created');
     } catch (e) { toast('Failed: ' + e.message); }
+  }
+
+  async function loadGitStatus(proj) {
+    const pi = await oc.getPath();
+    const workdir = pi?.cwd ?? pi?.path ?? '';
+    const parentDir = workdir.replace('/workspace-ui', '');
+    const path1 = workdir + '/' + proj.name;
+    const path2 = parentDir + '/' + proj.name;
+    let files = await git.getGitStatus(path1);
+    let fullPath = path1;
+    if (!Array.isArray(files) || files.length === 0) {
+      files = await git.getGitStatus(path2);
+      fullPath = path2;
+    }
+    setDiffView({ active: true, files: Array.isArray(files) ? files : [], selectedFile: null, loading: false, projectPath: fullPath });
+    setDiffView({ active: true, files: [], selectedFile: null, loading: true, projectPath: fullPath });
+    try {
+      const files = await git.getGitStatus(fullPath);
+      setDiffView(prev => ({ ...prev, files: Array.isArray(files) ? files : [], loading: false }));
+    } catch (e) {
+      setDiffView(prev => ({ ...prev, files: [], loading: false }));
+    }
+  }
+
+  async function loadGitDiff(file) {
+    const fullPath = diffView.projectPath;
+    if (!fullPath) {
+      setDiffView(prev => ({ ...prev, selectedFile: { path: file, loading: false, error: 'No project path' } }));
+      return;
+    }
+    setDiffView(prev => ({ ...prev, selectedFile: { path: file, loading: true } }));
+    try {
+      const result = await git.getGitDiff(fullPath, file);
+      setDiffView(prev => ({ ...prev, selectedFile: { path: file, loading: false, ...result } }));
+    } catch (e) {
+      setDiffView(prev => ({ ...prev, selectedFile: { path: file, loading: false, error: e.message } }));
+    }
+  }
+
+  function goBackToFileList() {
+    setDiffView(prev => ({ ...prev, selectedFile: null }));
+  }
+
+  function closeDiffView() {
+    setDiffView({ active: false, files: [], selectedFile: null, loading: false, projectPath: null });
   }
 
   async function handleSend({ text, slash }) {
@@ -758,6 +805,9 @@ function App() {
                     <div className="new-sess-row" onClick={() => { newSessionInProject(proj); setDrawerOpen(false); }}>
                       <span>＋</span> New session
                     </div>
+                    <div className="new-sess-row" onClick={() => { loadGitStatus(proj); setDrawerOpen(false); }}>
+                      <span>↔</span> View diffs
+                    </div>
                   </div>
                 )}
               </div>
@@ -791,11 +841,54 @@ function App() {
           }
         </div>
 
-        <Thread
-          messages={messages}
-          thinking={thinking}
-          contextPath={curProj?.path ?? null}
-        />
+        {diffView.active ? (
+          <div className="diff-viewer">
+            <div className="diff-header">
+              <button className="back-btn" onClick={diffView.selectedFile ? goBackToFileList : closeDiffView}>
+                {diffView.selectedFile ? '← Back' : '✕'}
+              </button>
+              <span className="diff-title">Git Diffs</span>
+            </div>
+            {!diffView.selectedFile ? (
+              <div className="diff-file-list">
+                {diffView.loading ? (
+                  <div className="diff-loading">Loading...</div>
+                ) : diffView.files.length === 0 ? (
+                  <div className="diff-empty">No changes or not a git repository</div>
+                ) : (
+                  diffView.files.map(f => (
+                    <div key={f.path} className="diff-file-row" onClick={() => loadGitDiff(f.path)}>
+                      <span className={`diff-status ${f.isNew ? 'new' : f.isDeleted ? 'deleted' : 'modified'}`}>
+                        {f.isNew ? 'A' : f.isDeleted ? 'D' : 'M'}
+                      </span>
+                      <span className="diff-filename">{f.path}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : (
+              <div className="diff-content">
+                {diffView.selectedFile.loading ? (
+                  <div className="diff-loading">Loading diff...</div>
+                ) : diffView.selectedFile.error ? (
+                  <div className="diff-error">{diffView.selectedFile.error}</div>
+                ) : (
+                  <GitDiff
+                    filePath={diffView.selectedFile.path}
+                    oldString={diffView.selectedFile.oldContent || ''}
+                    newString={diffView.selectedFile.newContent || ''}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <Thread
+            messages={messages}
+            thinking={thinking}
+            contextPath={curProj?.path ?? null}
+          />
+        )}
 
         <MessageInput
           onSend={handleSend}

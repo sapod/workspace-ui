@@ -1,11 +1,5 @@
 import { createOpencodeClient } from "@opencode-ai/sdk"
-
-const BASE = "";
-
-async function fetchJson(url) {
-  const r = await fetch(BASE + url);
-  return r.json();
-}
+import { fetchJson } from '../common/utils';
 
 class OpencodeService {
   constructor() {

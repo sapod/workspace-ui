@@ -1,17 +1,6 @@
+import { useState } from "react";
 
 // ── Core diff renderer ────────────────────────────────────────────────────────
-
-function renderDiff(oldString, newString) {
-  // Handle both real newlines and literal \n escape sequences
-  const unescape = s => s.replace(/\\n/g, "\n");
-  const oldLines = unescape(oldString).split("\n");
-  const newLines = unescape(newString).split("\n");
-
-  // Simple LCS-based line diff
-  const lcs = computeLCS(oldLines, newLines);
-  const hunks = buildHunks(oldLines, newLines, lcs);
-  return hunks;
-}
 
 function computeLCS(a, b) {
   const m = a.length, n = b.length;
@@ -31,20 +20,15 @@ function computeLCS(a, b) {
   return seq; // pairs of [aIdx, bIdx]
 }
 
-function buildHunks(oldLines, newLines, lcs) {
-  // Build diff lines: type = 'context' | 'removed' | 'added'
-  const result = [];
-  let ai = 0, bi = 0, li = 0;
-  const CONTEXT = 3;
-
-  // Collect raw diff
+function buildRaw(oldLines, newLines, lcs) {
   const raw = [];
+  let ai = 0, bi = 0, li = 0;
   while (ai < oldLines.length || bi < newLines.length) {
     const match = lcs[li];
     if (match && match[0] === ai && match[1] === bi) {
       raw.push({ type: "context", text: oldLines[ai], oldLine: ai + 1, newLine: bi + 1 });
       ai++; bi++; li++;
-    } else if (match && match[0] > ai || (!match && ai < oldLines.length)) {
+    } else if ((match && match[0] > ai) || (!match && ai < oldLines.length)) {
       raw.push({ type: "removed", text: oldLines[ai], oldLine: ai + 1, newLine: null });
       ai++;
     } else {
@@ -52,37 +36,41 @@ function buildHunks(oldLines, newLines, lcs) {
       bi++;
     }
   }
-
-  // Slice into hunks with context
-  const changeIndices = raw.map((r, i) => r.type !== "context" ? i : -1).filter(i => i >= 0);
-  if (changeIndices.length === 0) return [];
-
-  const hunks = [];
-  let hunkRanges = [];
-  let current = null;
-  for (const idx of changeIndices) {
-    const start = Math.max(0, idx - CONTEXT);
-    const end = Math.min(raw.length - 1, idx + CONTEXT);
-    if (!current) { current = { start, end }; }
-    else if (start <= current.end + 1) { current.end = Math.max(current.end, end); }
-    else { hunkRanges.push(current); current = { start, end }; }
-  }
-  if (current) hunkRanges.push(current);
-
-  for (const { start, end } of hunkRanges) {
-    hunks.push(raw.slice(start, end + 1));
-  }
-  return hunks;
+  return raw;
 }
 
-// ── Syntax highlight (simple token coloring) ─────────────────────────────────
+function computeRawDiff(oldString, newString) {
+  const unescape = s => s.replace(/\\n/g, "\n");
+  const oldLines = unescape(oldString).split("\n");
+  const newLines = unescape(newString).split("\n");
+  const lcs = computeLCS(oldLines, newLines);
+  return buildRaw(oldLines, newLines, lcs);
+}
 
-const KEYWORDS = /\b(const|let|var|function|return|import|export|default|from|if|else|for|while|class|extends|new|typeof|instanceof|null|undefined|true|false|async|await|of|in|type|interface|=>)\b/g;
-const STRINGS = /(["'`])(?:(?!\1)[^\\]|\\.)*?\1/g;
-const JSX_TAG = /(<\/?[A-Za-z][A-Za-z0-9.]*)/g;
-const JSX_ATTR = /\s([a-zA-Z-]+)(?==)/g;
-const COMMENTS = /(\/\/.*|\/\*[\s\S]*?\*\/|\{\/\*[\s\S]*?\*\/\})/g;
-const BRACES = /([{}[\]()])/g;
+function computeInitialRanges(raw, context = 3) {
+  const changeIndices = raw
+    .map((r, i) => r.type !== "context" ? i : -1)
+    .filter(i => i >= 0);
+  if (changeIndices.length === 0) return [];
+
+  const ranges = [];
+  let current = null;
+  for (const idx of changeIndices) {
+    const start = Math.max(0, idx - context);
+    const end = Math.min(raw.length - 1, idx + context);
+    if (!current) { current = { start, end }; }
+    else if (start <= current.end + 1) { current.end = Math.max(current.end, end); }
+    else { ranges.push(current); current = { start, end }; }
+  }
+  if (current) ranges.push(current);
+  return ranges;
+}
+
+function sliceHunks(raw, ranges) {
+  return ranges.map(({ start, end }) => raw.slice(start, end + 1));
+}
+
+// ── Syntax highlight ──────────────────────────────────────────────────────────
 
 function tokenize(line) {
   const KEYWORDS = new Set([
@@ -141,10 +129,20 @@ function tokenize(line) {
   }).join('');
 }
 
-function HunkHeader({ oldStart, newStart }) {
+// ── Components ────────────────────────────────────────────────────────────────
+
+function ExpandButton({ label, onClick }) {
+  return (
+    <div className="hunk-expand" onClick={onClick}>
+      {label}
+    </div>
+  );
+}
+
+function HunkHeader({ oldStart, oldCount, newStart, newCount }) {
   return (
     <div className="hunk-header">
-      @@ -{oldStart} +{newStart} @@
+      @@ -{oldStart},{oldCount} +{newStart},{newCount} @@
     </div>
   );
 }
@@ -166,9 +164,23 @@ function DiffLine({ line }) {
 }
 
 export function GitDiff({ filePath, oldString, newString }) {
-  const hunks = renderDiff(oldString, newString);
-  const removedCount = (oldString.split("\n").length);
-  const addedCount = (newString.split("\n").length);
+  const [raw] = useState(() => computeRawDiff(oldString, newString));
+  const [ranges, setRanges] = useState(() => computeInitialRanges(raw));
+
+  const hunks = sliceHunks(raw, ranges);
+
+  function expandHunk(index, direction, amount = 10) {
+    setRanges(prev => prev.map((r, i) => {
+      if (i !== index) return r;
+      return {
+        start: direction === "up"   ? Math.max(0, r.start - amount) : r.start,
+        end:   direction === "down" ? Math.min(raw.length - 1, r.end + amount) : r.end,
+      };
+    }));
+  }
+
+  const removedCount = raw.filter(l => l.type === "removed").length;
+  const addedCount   = raw.filter(l => l.type === "added").length;
 
   return (
     <div className="diff-file">
@@ -183,12 +195,23 @@ export function GitDiff({ filePath, oldString, newString }) {
           <div className="diff-empty">No changes</div>
         ) : (
           hunks.map((hunk, hi) => {
+            const range = ranges[hi];
             const firstOld = hunk.find(l => l.oldLine)?.oldLine ?? 1;
             const firstNew = hunk.find(l => l.newLine)?.newLine ?? 1;
+            const oldCount = hunk.filter(l => l.type !== "added").length;
+            const newCount = hunk.filter(l => l.type !== "removed").length;
+            const canExpandUp   = range.start > 0;
+            const canExpandDown = range.end < raw.length - 1;
             return (
               <div key={hi}>
-                <HunkHeader oldStart={firstOld} newStart={firstNew} />
+                <HunkHeader oldStart={firstOld} oldCount={oldCount} newStart={firstNew} newCount={newCount} />
+                {canExpandUp && (
+                  <ExpandButton label="↑ Show more" onClick={() => expandHunk(hi, "up")} />
+                )}
                 {hunk.map((line, li) => <DiffLine key={li} line={line} />)}
+                {canExpandDown && (
+                  <ExpandButton label="↓ Show more" onClick={() => expandHunk(hi, "down")} />
+                )}
               </div>
             );
           })

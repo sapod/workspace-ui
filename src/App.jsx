@@ -614,13 +614,6 @@ function App() {
       fullPath = path2;
     }
     setDiffView({ active: true, files: Array.isArray(files) ? files : [], selectedFile: null, loading: false, projectPath: fullPath });
-    setDiffView({ active: true, files: [], selectedFile: null, loading: true, projectPath: fullPath });
-    try {
-      const files = await git.getGitStatus(fullPath);
-      setDiffView(prev => ({ ...prev, files: Array.isArray(files) ? files : [], loading: false }));
-    } catch (e) {
-      setDiffView(prev => ({ ...prev, files: [], loading: false }));
-    }
   }
 
   async function loadGitDiff(file) {

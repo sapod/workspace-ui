@@ -1,9 +1,16 @@
 import { createOpencodeClient } from "@opencode-ai/sdk"
 
+const BASE = "";
+
+async function fetchJson(url) {
+  const r = await fetch(BASE + url);
+  return r.json();
+}
+
 class OpencodeService {
   constructor() {
     this._client = createOpencodeClient({
-      baseUrl: "http://localhost:4096",
+      baseUrl: "/",
     });
   }
 
@@ -62,14 +69,13 @@ class OpencodeService {
     return r.data;
   }
 
-  async getPath() {
-    const r = await this._client.global.path();
-    return r.data;
+async getPath() {
+    return fetchJson('/path');
   }
 
   async listFiles(path) {
-    const r = await this._client.global.file.list({ path: path || '' });
-    return r.data ?? [];
+    const r = await fetch(`/files?path=${encodeURIComponent(path || '')}`);
+    return r.json();
   }
 
   async listModels() {
@@ -91,8 +97,7 @@ class OpencodeService {
   }
 
   getEventUrl() {
-    const base = "http://localhost:4096";
-    return base + "/global/event";
+    return "/global/event";
   }
 }
 

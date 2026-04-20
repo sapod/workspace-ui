@@ -1302,3 +1302,111 @@ kbd {
   color: var(--text);
   font-size: 12px;
 }
+
+/* Diff viewer */
+.diff-file {
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 20px;
+  margin-top: 8px;
+}
+
+.diff-file-header {
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border2);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.diff-file-icon { font-size: 14px; }
+
+.diff-file-path {
+  flex: 1;
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.diff-stat-added { color: var(--green); font-weight: 600; }
+.diff-stat-removed { color: var(--red); font-weight: 600; }
+
+.hunk-header {
+  background: var(--bg3);
+  color: var(--text3);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 4px 0 4px 12px;
+  font-style: italic;
+  user-select: none;
+}
+
+.diff-body { overflow-x: auto; }
+
+.diff-line {
+  display: flex;
+  min-width: max-content;
+  width: 100%;
+}
+
+.diff-line--context { background: var(--bg); }
+.diff-line--removed { background: #3d1f1f; }
+.diff-line--added   { background: #1a2e1a; }
+
+.diff-line--removed:hover { background: #4d2525; }
+.diff-line--added:hover   { background: #1f3a1f; }
+
+.diff-line .line-num {
+  min-width: 44px;
+  padding: 0 8px;
+  text-align: right;
+  color: var(--text3);
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+
+.diff-line--removed .line-num { background: #2e1515; color: #6e3030; }
+.diff-line--added   .line-num { background: #122112; color: #2d6e2d; }
+
+.line-prefix {
+  min-width: 24px;
+  text-align: center;
+  user-select: none;
+  font-weight: 700;
+}
+
+.diff-line--removed .line-prefix { color: var(--red); }
+.diff-line--added   .line-prefix { color: var(--green); }
+.diff-line--context .line-prefix { color: var(--text3); }
+
+.line-code {
+  padding: 0 8px;
+  white-space: pre;
+  flex: 1;
+}
+
+.diff-line--removed .line-code { color: #ffa09e; }
+.diff-line--added   .line-code { color: #a5d6a7; }
+.diff-line--context .line-code { color: var(--text); }
+
+.diff-empty {
+  padding: 16px;
+  color: var(--text3);
+  text-align: center;
+}
+
+.tok-kw  { color: #ff7b72; }
+.tok-str { color: #a5d6a7; }
+.tok-num { color: #79c0ff; }
+.tok-tag { color: #7ee787; }
+
+.diff-line--removed .tok-kw  { color: #ff9e97; }
+.diff-line--removed .tok-str { color: #ffb3b0; }
+.diff-line--removed .tok-tag { color: #ffb3b0; }
+.diff-line--added .tok-kw    { color: #85e89d; }
+.diff-line--added .tok-str   { color: #c8e6c9; }
+.diff-line--added .tok-tag   { color: #c8e6c9; }

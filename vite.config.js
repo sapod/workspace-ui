@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: '0.0.0.0',
     proxy: {
       '/global': {
         target: 'http://localhost:4096',
@@ -14,11 +15,11 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/path': {
-        target: 'http://localhost:4096',
+        target: 'http://localhost:4097',
         changeOrigin: true,
       },
-      '/file': {
-        target: 'http://localhost:4096',
+      '/files': {
+        target: 'http://localhost:4097',
         changeOrigin: true,
       },
     },

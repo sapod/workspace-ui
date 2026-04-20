@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import oc from './services/opencode';
+import { GitDiff } from './components/GitDiff';
 import './App.css';
 
 const STORE = 'oc_projects_v1';
@@ -79,6 +80,8 @@ function RichText({ text, className }) {
 function ToolBlock({ inv }) {
   const [open, setOpen] = useState(false);
   const isRun = inv.state === 'call';
+  const isEdit = (inv.toolName || '').toLowerCase().includes('edit');
+  const editArgs = isEdit && inv.args?.filePath ? inv.args : null;
   const lines = [];
   if (inv.args) lines.push('INPUT:\n' + JSON.stringify(inv.args, null, 2));
   if (inv.result != null) {
@@ -92,7 +95,19 @@ function ToolBlock({ inv }) {
         <span className="tool-label">{inv.toolName || 'tool'}</span>
         <span className={`tool-st ${isRun ? 'run' : 'ok'}`}>{isRun ? '● running' : '✓ done'}</span>
       </div>
-      {open && <div className="tool-body"><pre>{lines.join('\n\n') || '(no details)'}</pre></div>}
+      {open && (
+        <div className="tool-body">
+          {editArgs ? (
+            <GitDiff
+              filePath={editArgs.filePath}
+              oldString={editArgs.oldString}
+              newString={editArgs.newString}
+            />
+          ) : (
+            <pre>{lines.join('\n\n') || '(no details)'}</pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -330,7 +345,10 @@ function NewProjectModal({ open, onClose, onDone, toast }) {
           .filter(f => f.label && !f.label.startsWith('.'))
           .slice(0, 28);
         setDirs(list);
-      } catch { setDirs([]); }
+      } catch(e) {
+        console.error(e.stack)
+        setDirs([]);
+      }
     }
     fetchDirs();
   }, [open]);

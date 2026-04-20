@@ -2,24 +2,16 @@
 
 A mobile-friendly React web UI for [opencode](https://opencode.ai), accessible remotely via Tailscale.
 
-## Files
-
-| File | Purpose |
-|---|---|
-| `workspace-react/` | React app built with Vite |
-| `backup_original/` | Original ui.html (backup) |
-| `server.js` | Original Express server (backup) |
-| `README.md` | This file |
-
----
-
 ## Quick Start
 
 ```bash
-cd workspace-react
 npm install
-npm run dev
+npm run start
 ```
+
+Two servers start:
+- **UI**: http://localhost:5173
+- **File API**: http://localhost:4097 (proxied to `/path`, `/files`)
 
 Open http://localhost:5173
 
@@ -27,20 +19,30 @@ Open http://localhost:5173
 
 ## Development
 
-The app proxies API requests to opencode server at `http://localhost:4096`.
+The app proxies:
+- `/global/*`, `/session/*` → opencode server at `http://localhost:4096`
+- `/path`, `/files` → file API server at `http://localhost:4097`
 
-### 1. Start opencode from your workspace root
+Run `npm run start` to start both the UI and file API server. Or run them separately:
+
+- `npm run dev` — UI only (port 5173)
+- `npm run server` — file API server (port 4097)
+
+#### File API server options
+
+```bash
+npm run server -- -w /path/to/workspace
+```
+
+| Option | Description |
+|---|---|
+| `-w, --workdir` | Workspace root path (default: current directory) |
+
+### Start opencode from your workspace root
 
 ```bash
 cd ~/projects
-opencode serve --port 4096
-```
-
-### 2. Start the web UI
-
-```bash
-cd workspace-react
-npm run dev
+opencode serve --port 4096 --hostname 0.0.0.0 --cors http://[ip]:5173
 ```
 
 Open `http://localhost:5173` or `http://<tailscale-ip>:5173`.
@@ -50,7 +52,6 @@ Open `http://localhost:5173` or `http://<tailscale-ip>:5173`.
 ## Production Build
 
 ```bash
-cd workspace-react
 npm run build
 ```
 
@@ -60,8 +61,8 @@ Serve the `dist/` folder with any static server that proxies:
 |---|---|
 | `/global/*` | `localhost:4096/global/*` |
 | `/session/*` | `localhost:4096/session/*` |
-| `/path` | `localhost:4096/path` |
-| `/file` | `localhost:4096/file` |
+| `/path` | `localhost:4097/path` |
+| `/files` | `localhost:4097/files` |
 
 ---
 
@@ -104,12 +105,17 @@ All projects share one `opencode serve` process running from your **workspace ro
 
 Standard chat interface. Messages are sent with `POST /session/:id/message` (blocking). The topbar shows `● thinking` while waiting and offers a **■ stop** button (`POST /session/:id/abort`).
 
+### Diff viewer
+
+Edit tool responses display a unified diff showing old → new content with syntax highlighting.
+
 ### Slash commands
 
 | Command | Action |
 |---|---|
 | `/new` | New session in the current project |
 | `/sessions` | List sessions in the current project |
+| `/models` | Show available models (with picker) |
 | `/fork` | Fork the current session |
 | `/clear` | Clear messages from view |
 | `/export` | Download messages as JSON |
@@ -154,21 +160,26 @@ Browser / Phone  (Tailscale)
        ▼
 ┌─────────────────────────────┐
 │  Vite Dev Server  :5173    │  React + Vite
-│  Proxy → :4096             │  /global/*, /session/*, /path, /file
+│  Proxy → :4096, :4097      │  /global/*, /session/*, /path, /files
 └────────────┬────────────────┘
              │ localhost
-             ▼
-┌─────────────────────────────┐
-│  opencode serve  :4096      │  Go binary
-│  ~/projects/  (workspace)│
-│  ├── project1/            │
-│  ├── project2/            │
-│  └── ...                  │
-│                           │
-│  ~/.local/share/opencode/  │
-│  └── opencode.db          │  global session store
-└─────────────────────────────┘
+     ┌───────┴───────┐
+     ▼               ▼
+┌─────────┐   ┌──────────────┐
+│ :4096   │   │  :4097       │
+│opencode │   │  file API    │
+│ serve   │   │  (Express)   │
+└─────────┘   └──────────────┘
 ```
+
+### File API Server (server.js)
+
+Simple Express server that provides workspace file listing:
+
+- `GET /path` — returns workspace root path
+- `GET /files?path=<dir>` — lists directory contents
+
+Used by the New Project modal to browse and select subfolders. The workspace path defaults to the directory where `npm run server` is run, or can be set with `-w`.
 
 ### React component tree
 
@@ -182,7 +193,7 @@ App                    root state, API calls
 │   ├── CodeBlock      fenced code with copy button
 │   └── ToolBlock      collapsible tool-call display
 ├── MessageInput       textarea, slash menu, send
-├── NewProjectModal    subfolder picker (GET /file), name input
+├── NewProjectModal    subfolder picker (GET /files), name input
 └── Toast             notification popup
 ```
 

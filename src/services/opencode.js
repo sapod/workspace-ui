@@ -1,6 +1,73 @@
 import { createOpencodeClient } from "@opencode-ai/sdk"
 import { fetchJson } from '../common/utils';
 
+async function subscribeEvents() {
+  const response = await fetch('http://localhost:4096/event', {
+    headers: { 'Accept': 'text/event-stream' }
+  })
+
+  const reader = response.body?.getReader()
+  return reader;
+}
+
+async function handleEvents(reader, onDelta, onPart, onMessage) {
+  const decoder = new TextDecoder();
+  const maxHeartbeatsToWait = 3;
+  let heartbeatCount = 0;
+  let exit = false;
+  const messageRoles = {}
+  const messagePartTypes = {}
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    const chunk = decoder.decode(value)
+
+    for (const line of chunk.split('\n')) {
+      if (!line.startsWith('data: ')) continue
+      try {
+        const event = JSON.parse(line.slice(6))
+        if (event.type === 'server.heartbeat') {
+          heartbeatCount ++;
+          if (heartbeatCount > maxHeartbeatsToWait) {
+            reader.cancel();
+            exit = true;
+            break;
+          }
+        }
+        else if (event.type === 'session.idle' || (event.type == 'session.status' && event.properties.status == 'idle')) {
+          reader.cancel();
+          exit = true;
+          break
+        }
+        else if (event.type === 'message.updated') {
+          const { info } = event.properties
+          messageRoles[info.id] = info.role
+          onMessage?.(info)
+        }
+        else if (event.type === 'message.part.updated') {
+          const { part } = event.properties
+          messagePartTypes[part.id] = part.type
+          onPart?.(part.messageID, part)
+        }
+        else if (event.type === 'message.part.delta' && event.properties.field === 'text') {
+          const role = messageRoles[event.properties.messageID]
+          const partType = messagePartTypes[event.properties.partID]
+          const { messageID, partID, field, delta } = event.properties
+          if (field === 'text' && (partType === 'text' || partType === 'reasoning')) {
+            onDelta?.(messageID, partID, delta)
+          }
+          heartbeatCount = 0;
+        }
+      } catch {
+        // partial line, ignore
+      }
+    }
+
+    if (exit) break;
+  }
+}
+
 class OpencodeService {
   constructor() {
     this._client = createOpencodeClient({
@@ -13,7 +80,7 @@ class OpencodeService {
       const r = await this._client.session.list();
       const version = r.data?.[0]?.version || '?';
       return { ok: true, version };
-    } catch (e) {
+    } catch {
       return { ok: false };
     }
   }
@@ -53,17 +120,23 @@ class OpencodeService {
     return r.data ?? [];
   }
 
-  async sendMessage(id, parts, model) {
-    const body = { parts };
+  async sendMessage(id, parts, model, noReply = false, onDelta, onPart, onMessage) {
+    const body = { parts, noReply };
     if (model) body.model = model;
-    const r = await this._client.session.prompt({
+
+    const reader = !noReply ? await subscribeEvents() : null;
+
+    this._client.session.prompt({
       path: { id },
       body,
     });
-    return r.data;
+
+    if (!noReply){
+      await handleEvents(reader, onDelta, onPart, onMessage);
+    }
   }
 
-async getPath() {
+  async getPath() {
     return fetchJson('/path');
   }
 
@@ -84,7 +157,7 @@ async getPath() {
         }
       }
       return models;
-    } catch (e) {
+    } catch {
       await this._client.tui.openModels();
       return [];
     }

@@ -517,6 +517,7 @@ function App() {
     if (!sessId) return;
     try {
       const r = await oc.listMessages(sessId);
+      // console.log(JSON.stringify(r, null, 2));
       setMessages(Array.isArray(r) ? r : []);
     } catch { setMessages([]); }
   }
@@ -587,10 +588,9 @@ function App() {
         const primer =
           `For this entire session, your working directory is \`${proj.path}\`.\n` +
           `All file reads, writes, edits, and shell commands must use \`${proj.path}\` as the project root.\n` +
-          `Always cd into \`${proj.path}\` before running shell commands.\n` +
-          `Reply only: "Understood. Working in \`${proj.path}\`."`;
+          `Always cd into \`${proj.path}\` before running shell commands.`;
         try {
-          const r = await oc.sendMessage(s.id, [{ type: 'text', text: primer }], null);
+          const r = await oc.sendMessage(s.id, [{ type: 'text', text: primer }], null, true);
           setThinking(false);
           await loadMessages(s.id);
         } catch (e) {
@@ -652,7 +652,48 @@ function App() {
 
     const modelOverride = model || selectedModel;
     try {
-      await oc.sendMessage(curSessId, [{ type: 'text', text }], modelOverride ? { providerID: modelOverride.provider, modelID: modelOverride.name } : null);
+      await oc.sendMessage(
+        curSessId,
+        [{ type: 'text', text }], modelOverride ? { providerID: modelOverride.provider, modelID: modelOverride.name } : null,
+        false,
+
+        // onDelta — streaming text/reasoning chunks
+        (messageID, partID, partType, delta) => {
+          setMessages(prev => prev.map(m => {
+            if (m.info?.id !== messageID) return m
+            const parts = m.parts ?? []
+            const existing = parts.find(p => p.id === partID)
+            if (existing) {
+              return { ...m, parts: parts.map(p => p.id === partID ? { ...p, text: p.text + delta } : p) }
+            } else {
+              return { ...m, parts: [...parts, { id: partID, type: partType, text: delta }] }
+            }
+          }))
+        },
+
+        // onPart — full part upsert for all types (tool, step-start, step-finish, text final, reasoning final)
+        (messageID, part) => {
+          setMessages(prev => prev.map(m => {
+            if (m.info?.id !== messageID) return m
+            const parts = m.parts ?? []
+            const existing = parts.find(p => p.id === part.id)
+            if (existing) {
+              return { ...m, parts: parts.map(p => p.id === part.id ? part : p) }
+            } else {
+              return { ...m, parts: [...parts, part] }
+            }
+          }))
+        },
+
+        // onMessage — create assistant message shell when first seen
+        (info) => {
+          if (info.role !== 'assistant') return
+          setMessages(prev => {
+            if (prev.find(m => m.info?.id === info.id)) return prev
+            return [...prev, { info, parts: [] }]
+          })
+        }
+      );
       setThinking(false);
       await loadMessages(curSessId);
     } catch (e) {

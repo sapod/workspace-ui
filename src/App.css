@@ -1512,4 +1512,5 @@ kbd {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
+  padding-bottom: 60px;
 }

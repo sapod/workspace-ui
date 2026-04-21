@@ -139,10 +139,11 @@ function MessageBubble({ msg }) {
   }
 
   if (role === 'assistant') {
+    const isAborted = msg?.info?.error?.name === 'MessageAbortedError';
     return (
       <div className="msg">
-        <div className="msg-who who-ai">opencode</div>
-        {parts.map((p, i) => {
+        <div className="msg-who who-ai">opencode {isAborted && <span className="msg-aborted">(aborted)</span>}</div>
+        {isAborted ? null : parts.map((p, i) => {
           if (p.type === 'text') return <RichText key={i} text={p.text || ''} className="bub-ai" />;
           if (p.type === 'reasoning') return <div key={i} className="reasoning">{p.text}</div>;
           if (p.type === 'tool') return <ToolBlock key={i} inv={{ toolName: p.tool, result: p.state?.output, args: p.state?.input }} />;
@@ -517,7 +518,6 @@ function App() {
     if (!sessId) return;
     try {
       const r = await oc.listMessages(sessId);
-      // console.log(JSON.stringify(r, null, 2));
       setMessages(Array.isArray(r) ? r : []);
     } catch { setMessages([]); }
   }

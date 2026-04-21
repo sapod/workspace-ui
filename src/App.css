@@ -530,6 +530,11 @@ body {
   color: var(--cyan);
 }
 
+.msg-aborted {
+  color: var(--red);
+  font-weight: 400;
+}
+
 .who-sys {
   color: var(--text3);
 }

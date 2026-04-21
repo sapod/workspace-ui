@@ -105,7 +105,7 @@ class OpencodeService {
   }
 
   async abortSession(id) {
-    return await this._client.session.abort({ id });
+    return await this._client.session.abort({ path: { id } });
   }
 
   async forkSession(id) {

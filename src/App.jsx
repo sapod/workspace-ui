@@ -491,7 +491,9 @@ function App() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState({ provider: 'opencode', name: 'big-pickle' });
-  const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null });
+  const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
+  const [commitMsgOpen, setCommitMsgOpen] = useState(false);
+  const [commitMsg, setCommitMsg] = useState('');
   const evtRef = useRef(null);
 
   async function boot() {
@@ -602,7 +604,9 @@ function App() {
   }
 
   async function loadGitStatus(proj) {
+    if (!proj) return;
     const pi = await oc.getPath();
+    if (!pi) return;
     const workdir = pi?.cwd ?? pi?.path ?? '';
     const parentDir = workdir.replace('/workspace-ui', '');
     const path1 = workdir + '/' + proj.name;
@@ -613,7 +617,15 @@ function App() {
       files = await git.getGitStatus(path2);
       fullPath = path2;
     }
+    if (!fullPath) return;
     setDiffView({ active: true, files: Array.isArray(files) ? files : [], selectedFile: null, loading: false, projectPath: fullPath });
+  }
+
+  async function refreshGitStatus() {
+    const p = diffView.projectPath;
+    if (!p) return;
+    const files = await git.getGitStatus(p);
+    setDiffView(prev => ({ ...prev, files: Array.isArray(files) ? files : [] }));
   }
 
   async function loadGitDiff(file) {
@@ -636,7 +648,45 @@ function App() {
   }
 
   function closeDiffView() {
-    setDiffView({ active: false, files: [], selectedFile: null, loading: false, projectPath: null });
+    setDiffView({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
+  }
+
+  function toggleFileCheckbox(filePath) {
+    setDiffView(prev => {
+      const sel = prev.selectedFiles || [];
+      const next = sel.includes(filePath) ? sel.filter(f => f !== filePath) : [...sel, filePath];
+      return { ...prev, selectedFiles: next };
+    });
+  }
+
+  function handleCommitClick() {
+    if (!diffView.selectedFiles?.length) { toast('Select files to commit'); return; }
+    setCommitMsgOpen(true);
+  }
+
+async function handleCommitConfirm() {
+    if (!commitMsg?.trim()) { toast('Enter a commit message'); return; }
+    if (!diffView.projectPath) { toast('No project path'); return; }
+    setCommitMsgOpen(false);
+    try {
+      await git.commitFiles(diffView.projectPath, diffView.selectedFiles, commitMsg);
+      toast('Committed: ' + diffView.selectedFiles.length + ' file(s)');
+      setCommitMsg('');
+      setDiffView(prev => ({ ...prev, selectedFiles: [] }));
+      await refreshGitStatus();
+    } catch (e) { toast('Commit failed: ' + e.message); }
+  }
+
+  async function handleRollbackClick() {
+    if (!diffView.selectedFiles?.length) { toast('Select files to rollback'); return; }
+    if (!diffView.projectPath) { toast('No project path'); return; }
+    if (!confirm('Rollback ' + diffView.selectedFiles.length + ' file(s)? This discards all changes.')) return;
+    try {
+      await git.rollbackFiles(diffView.projectPath, diffView.selectedFiles);
+      toast('Rolled back: ' + diffView.selectedFiles.length + ' file(s)');
+      setDiffView(prev => ({ ...prev, selectedFiles: [] }));
+      await refreshGitStatus();
+    } catch (e) { toast('Rollback failed: ' + e.message); }
   }
 
   async function handleSend({ text, slash }) {
@@ -885,6 +935,10 @@ function App() {
             </div>
             {!diffView.selectedFile ? (
               <div className="diff-file-list">
+                <div className="diff-actions">
+                  <button className="diff-action-btn" onClick={handleCommitClick}>Commit</button>
+                  <button className="diff-action-btn" onClick={handleRollbackClick}>Rollback</button>
+                </div>
                 {diffView.loading ? (
                   <div className="diff-loading">Loading...</div>
                 ) : diffView.files.length === 0 ? (
@@ -892,6 +946,12 @@ function App() {
                 ) : (
                   diffView.files.map(f => (
                     <div key={f.path} className="diff-file-row" onClick={() => loadGitDiff(f.path)}>
+                      <input
+                        type="checkbox"
+                        checked={diffView.selectedFiles?.includes(f.path) || false}
+                        onChange={e => { e.stopPropagation(); toggleFileCheckbox(f.path); }}
+                        onClick={e => e.stopPropagation()}
+                      />
                       <span className={`diff-status ${f.isUnversioned ? 'unversioned' : f.isNew ? 'new' : f.isDeleted ? 'deleted' : 'modified'}`}>
                         {f.isUnversioned ? 'U' : f.isNew ? 'A' : f.isDeleted ? 'D' : 'M'}
                       </span>
@@ -948,6 +1008,34 @@ function App() {
           toast('Model set to ' + model.provider + '/' + model.name);
         }}
       />
+
+      {commitMsgOpen && (
+        <div className="overlay open" onClick={e => e.target === e.currentTarget && setCommitMsgOpen(false)}>
+          <div className="mbox">
+            <div className="mhdr">
+              <span className="m-title">Commit Message</span>
+              <button className="m-x" onClick={() => { setCommitMsgOpen(false); setCommitMsg(''); }}>✕</button>
+            </div>
+            <div className="mbody">
+              <div className="field">
+                <label>Commit message for {diffView.selectedFiles?.length} file(s)</label>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Describe your changes..."
+                  value={commitMsg}
+                  onChange={e => setCommitMsg(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && commitMsg.trim() && handleCommitConfirm()}
+                />
+              </div>
+            </div>
+            <div className="mfoot">
+              <button className="btn-cancel" onClick={() => { setCommitMsgOpen(false); setCommitMsg(''); }}>Cancel</button>
+              <button className="btn-ok" onClick={() => handleCommitConfirm()}>Commit</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toastEl}
     </>

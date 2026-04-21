@@ -39,56 +39,84 @@ app.get('/files', (req, res) => {
   }
 });
 
-app.get('/git-status', (req, res) => {
-  let p = req.query.path || WORKSPACE;
+app.use(express.json());
+
+function gitStatus(p, res) {
   if (!p || p === WORKSPACE) {
     return res.json([]);
   }
-  try {
-    const output = execSync(`git -C "${p}" status --porcelain`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
-    if (!output.trim()) {
-      return res.json([]);
-    }
-    const files = output.split('\n').filter(Boolean).map(line => {
-      const status = line.slice(0, 2);
-      const filePath = line.slice(3);
-      const isUnversioned = status.includes('?');
-      return {
-        path: filePath,
-        status: isUnversioned ? 'U' : (status.trim() || 'modified'),
-        isNew: status.includes('A'),
-        isModified: status.includes('M'),
-        isDeleted: status.includes('D'),
-        isUnversioned,
-      };
-    });
-    res.json(files);
-  } catch (e) {
-    console.error('git-status error:', e.message);
-    res.json([]);
+  const output = execSync(`git -C "${p}" status --porcelain`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  if (!output.trim()) {
+    return res.json([]);
   }
-});
+  const filesList = output.split('\n').filter(Boolean).map(line => {
+    const status = line.slice(0, 2);
+    const filePath = line.slice(3);
+    const isUnversioned = status.includes('?');
+    return {
+      path: filePath,
+      status: isUnversioned ? 'U' : (status.trim() || 'modified'),
+      isNew: status.includes('A'),
+      isModified: status.includes('M'),
+      isDeleted: status.includes('D'),
+      isUnversioned,
+    };
+  });
+  return res.json(filesList);
+}
 
-app.get('/git-diff', (req, res) => {
-  let p = req.query.path || WORKSPACE;
-  let file = req.query.file;
+function gitDiff(p, file, res) {
   if (!file || !p || p === WORKSPACE) {
     return res.status(400).json({ error: 'file and path parameters required' });
   }
+  let oldContent = '';
+  let newContent = '';
   try {
-    let oldContent = '';
-    let newContent = '';
-    try {
-      oldContent = execSync(`git -C "${p}" show HEAD:"${file}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
-    } catch {
-      oldContent = '';
+    oldContent = execSync(`git -C "${p}" show HEAD:"${file}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  } catch {
+    oldContent = '';
+  }
+  try {
+    newContent = readFileSync(join(p, file), 'utf-8');
+  } catch {
+    newContent = '';
+  }
+  return res.json({ oldContent, newContent });
+}
+
+function gitCommit(p, files, message, res) {
+  if (!p || !Array.isArray(files) || !message) {
+    return res.status(400).json({ error: 'path, files array, and message are required' });
+  }
+  const fileList = files.map(f => `"${f}"`).join(' ');
+  execSync(`git -C "${p}" add ${fileList}`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  execSync(`git -C "${p}" commit -m "${message}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  return res.json({ success: true });
+}
+
+function gitRollback(p, files, res) {
+  if (!p || !Array.isArray(files)) {
+    return res.status(400).json({ error: 'path and files array are required' });
+  }
+  for (const f of files) {
+    execSync(`git -C "${p}" checkout -- "${f}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  }
+  return res.json({ success: true });
+}
+
+app.all('/git/:action', (req, res) => {
+  const { action } = req.params;
+  const { path, file, files, message } = req.body;
+  const p = path || WORKSPACE;
+
+  try {
+    switch (action) {
+      case 'status': return gitStatus(p, res);
+      case 'diff': return gitDiff(p, file, res);
+      case 'commit': return gitCommit(p, files, message, res);
+      case 'rollback': return gitRollback(p, files, res);
+      default: return res.status(404).json({ error: 'Unknown git action' });
     }
-    try {
-      newContent = readFileSync(join(p, file), 'utf-8');
-    } catch {
-      newContent = '';
-    }
-    res.json({ oldContent, newContent });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

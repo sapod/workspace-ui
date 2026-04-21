@@ -22,11 +22,7 @@ export default defineConfig({
         target: 'http://localhost:4097',
         changeOrigin: true,
       },
-      '/git-status': {
-        target: 'http://localhost:4097',
-        changeOrigin: true,
-      },
-      '/git-diff': {
+      '/git': {
         target: 'http://localhost:4097',
         changeOrigin: true,
       },

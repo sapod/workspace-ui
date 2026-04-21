@@ -4,7 +4,7 @@
   --border: #222228; --border2: #2e2e38;
   --text: #e0e0ec; --text2: #85859e; --text3: #424258;
   --accent: #6655f6; --accenthi: #9080ff; --accentg: rgba(102, 85, 246, .12);
-  --green: #32cc76; --red: #e05555; --yellow: #e0a020; --cyan: #20c0e0; --orange: #e07040;
+  --green: #32cc76; --red: #e05555; --yellow: #e0a020; --cyan: #20c0e0; --orange: #e07040; --blue: #60a0ff;
   --sb: env(safe-area-inset-bottom, 0px); --st: env(safe-area-inset-top, 0px);
 }
 
@@ -1500,6 +1500,11 @@ kbd {
 
 .diff-status.deleted {
   background: var(--red);
+  color: var(--bg);
+}
+
+.diff-status.unversioned {
+  background: var(--blue);
   color: var(--bg);
 }
 

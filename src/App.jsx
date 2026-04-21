@@ -851,8 +851,8 @@ function App() {
                 ) : (
                   diffView.files.map(f => (
                     <div key={f.path} className="diff-file-row" onClick={() => loadGitDiff(f.path)}>
-                      <span className={`diff-status ${f.isNew ? 'new' : f.isDeleted ? 'deleted' : 'modified'}`}>
-                        {f.isNew ? 'A' : f.isDeleted ? 'D' : 'M'}
+                      <span className={`diff-status ${f.isUnversioned ? 'unversioned' : f.isNew ? 'new' : f.isDeleted ? 'deleted' : 'modified'}`}>
+                        {f.isUnversioned ? 'U' : f.isNew ? 'A' : f.isDeleted ? 'D' : 'M'}
                       </span>
                       <span className="diff-filename">{f.path}</span>
                     </div>

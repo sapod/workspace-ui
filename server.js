@@ -52,12 +52,14 @@ app.get('/git-status', (req, res) => {
     const files = output.split('\n').filter(Boolean).map(line => {
       const status = line.slice(0, 2);
       const filePath = line.slice(3);
+      const isUnversioned = status.includes('?');
       return {
         path: filePath,
-        status: status.trim() || 'modified',
-        isNew: status.includes('?') || status.includes('A'),
+        status: isUnversioned ? 'U' : (status.trim() || 'modified'),
+        isNew: status.includes('A'),
         isModified: status.includes('M'),
         isDeleted: status.includes('D'),
+        isUnversioned,
       };
     });
     res.json(files);

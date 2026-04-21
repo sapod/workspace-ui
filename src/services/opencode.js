@@ -2,7 +2,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk"
 import { fetchJson } from '../common/utils';
 
 async function subscribeEvents() {
-  const response = await fetch('http://localhost:4096/event', {
+  const response = await fetch(`http://${window.location.hostname}:4096/event`, {
     headers: { 'Accept': 'text/event-stream' }
   })
 

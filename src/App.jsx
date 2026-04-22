@@ -5,12 +5,19 @@ import { GitDiff } from './components/GitDiff';
 import './App.css';
 
 const STORE = 'oc_projects_v1';
+const SESSION_STORE = 'oc_open_session_v1';
 
 function loadProjects() {
   try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { return []; }
 }
 function saveProjects(p) {
   try { localStorage.setItem(STORE, JSON.stringify(p)); } catch {}
+}
+function loadOpenSession() {
+  try { return localStorage.getItem(SESSION_STORE) || null; } catch { return null; }
+}
+function saveOpenSession(id) {
+  try { localStorage.setItem(SESSION_STORE, id || ''); } catch {}
 }
 
 const SLASHES = [
@@ -488,7 +495,7 @@ function App() {
   const [ocSessions, setOcSessions] = useState([]);
   const [projects, setProjects] = useState(loadProjects);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
-  const [curSessId, setCurSessId] = useState(null);
+  const [curSessId, setCurSessId] = useState(() => loadOpenSession());
   const [curProjId, setCurProjId] = useState(null);
   const [messages, setMessages] = useState(null);
   const [thinking, setThinking] = useState(false);
@@ -509,6 +516,7 @@ function App() {
       const h = await oc.health();
       setStatus({ ok: true, label: 'v' + (h?.version ?? '?') });
       await refreshSessions();
+      if (curSessId) { await loadMessages(curSessId); }
     } catch {
       setStatus({ ok: false, label: 'opencode offline' });
       setTimeout(boot, 4000);
@@ -516,6 +524,8 @@ function App() {
   }
 
   useEffect(() => { boot(); }, []);
+
+  useEffect(() => { saveOpenSession(curSessId); }, [curSessId]);
 
   async function refreshSessions() {
     try {
@@ -567,6 +577,7 @@ function App() {
   }
 
   function unlinkSession(projId, sessId) {
+    if (!confirm('Remove this session from the project?')) return;
     const next = projects.map(p =>
       p.id === projId ? { ...p, sessionIds: p.sessionIds.filter(id => id !== sessId) } : p
     );

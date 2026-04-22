@@ -45,7 +45,7 @@ function gitStatus(p, res) {
   if (!p || p === WORKSPACE) {
     return res.json([]);
   }
-  const output = execSync(`git -C "${p}" status --porcelain`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  const output = execSync(`git -C "${p}" status --porcelain -uall`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
   if (!output.trim()) {
     return res.json([]);
   }
@@ -104,6 +104,18 @@ function gitRollback(p, files, res) {
   return res.json({ success: true });
 }
 
+function gitLog(p, limit = 20, res) {
+  if (!p) {
+    return res.status(400).json({ error: 'path is required' });
+  }
+  const output = execSync(`git -C "${p}" log --oneline -n ${limit}`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+  const commits = output.split('\n').filter(Boolean).map(line => {
+    const match = line.match(/^([a-f0-9]+)\s+(.*)$/);
+    return match ? { hash: match[1], message: match[2] } : { hash: '', message: line };
+  });
+  return res.json(commits);
+}
+
 app.all('/git/:action', (req, res) => {
   const { action } = req.params;
   const { path, file, files, message } = req.body;
@@ -115,6 +127,7 @@ app.all('/git/:action', (req, res) => {
       case 'diff': return gitDiff(p, file, res);
       case 'commit': return gitCommit(p, files, message, res);
       case 'rollback': return gitRollback(p, files, res);
+      case 'log': return gitLog(p, req.body.limit || 20, res);
       default: return res.status(404).json({ error: 'Unknown git action' });
     }
   } catch (e) {

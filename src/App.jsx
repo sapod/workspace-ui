@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import oc from './services/opencode';
 import { git } from './services/git';
 import { GitDiff } from './components/GitDiff';
@@ -144,8 +144,14 @@ function MessageBubble({ msg }) {
       <div className="msg">
         <div className="msg-who who-ai">opencode {isAborted && <span className="msg-aborted">(aborted)</span>}</div>
         {isAborted ? null : parts.map((p, i) => {
-          if (p.type === 'text') return <RichText key={i} text={p.text || ''} className="bub-ai" />;
-          if (p.type === 'reasoning') return <div key={i} className="reasoning">{p.text}</div>;
+          if (p.type === 'text') {
+            if (!p.text) return null;
+            return <RichText key={i} text={p.text} className="bub-ai" />;
+          }
+          if (p.type === 'reasoning') {
+            if (!p.text) return null;
+            return <div key={i} className="reasoning">{p.text}</div>;
+          }
           if (p.type === 'tool') return <ToolBlock key={i} inv={{ toolName: p.tool, result: p.state?.output, args: p.state?.input }} />;
           if (p.type === 'tool-invocation') return <ToolBlock key={i} inv={p.toolInvocation || {}} />;
           if (p.type === 'step-start' || p.type === 'step-finish') return null;
@@ -494,6 +500,8 @@ function App() {
   const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
   const [commitMsgOpen, setCommitMsgOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState('');
+  const [commitListOpen, setCommitListOpen] = useState(false);
+  const [commitList, setCommitList] = useState([]);
   const evtRef = useRef(null);
 
   async function boot() {
@@ -689,6 +697,15 @@ async function handleCommitConfirm() {
     } catch (e) { toast('Rollback failed: ' + e.message); }
   }
 
+  async function handleShowCommits() {
+    if (!diffView.projectPath) { toast('No project path'); return; }
+    try {
+      const list = await git.getCommitList(diffView.projectPath, 20);
+      setCommitList(list || []);
+      setCommitListOpen(true);
+    } catch (e) { toast('Failed to load commits: ' + e.message); }
+  }
+
   async function handleSend({ text, slash }) {
     if (slash) { await handleSlash(slash); return; }
     if (!text || !curSessId || thinking) return;
@@ -707,27 +724,42 @@ async function handleCommitConfirm() {
         [{ type: 'text', text }], modelOverride ? { providerID: modelOverride.provider, modelID: modelOverride.name } : null,
         false,
 
-        // onDelta — streaming text/reasoning chunks
+        // onDelta — safe text append
         (messageID, partID, partType, delta) => {
+          if (!delta) return;
           setMessages(prev => prev.map(m => {
             if (m.info?.id !== messageID) return m
             const parts = m.parts ?? []
             const existing = parts.find(p => p.id === partID)
             if (existing) {
-              return { ...m, parts: parts.map(p => p.id === partID ? { ...p, text: p.text + delta } : p) }
+              return {
+                ...m,
+                parts: parts.map(p =>
+                  p.id === partID
+                    ? { ...p, text: (p.text ?? '') + delta }  // ?? '' guards undefined
+                    : p
+                )
+              }
             } else {
               return { ...m, parts: [...parts, { id: partID, type: partType, text: delta }] }
             }
           }))
         },
 
-        // onPart — full part upsert for all types (tool, step-start, step-finish, text final, reasoning final)
+        // onPart — only overwrite text/reasoning parts once they're finalized (time.end exists)
+        // always overwrite everything else (tool, step-start, step-finish, etc.)
         (messageID, part) => {
           setMessages(prev => prev.map(m => {
             if (m.info?.id !== messageID) return m
             const parts = m.parts ?? []
             const existing = parts.find(p => p.id === part.id)
+
+            const isStreamingType = part.type === 'text' || part.type === 'reasoning'
+            const isFinalized = part.time?.end != null
+
             if (existing) {
+              // For streaming types: only replace once finalized, otherwise keep accumulated delta text
+              if (isStreamingType && !isFinalized) return m
               return { ...m, parts: parts.map(p => p.id === part.id ? part : p) }
             } else {
               return { ...m, parts: [...parts, part] }
@@ -938,6 +970,7 @@ async function handleCommitConfirm() {
                 <div className="diff-actions">
                   <button className="diff-action-btn" onClick={handleCommitClick}>Commit</button>
                   <button className="diff-action-btn" onClick={handleRollbackClick}>Rollback</button>
+                  <button className="diff-action-btn" onClick={handleShowCommits} title="Commit History"><i className="fa-solid fa-code-branch"></i></button>
                 </div>
                 {diffView.loading ? (
                   <div className="diff-loading">Loading...</div>
@@ -1032,6 +1065,32 @@ async function handleCommitConfirm() {
             <div className="mfoot">
               <button className="btn-cancel" onClick={() => { setCommitMsgOpen(false); setCommitMsg(''); }}>Cancel</button>
               <button className="btn-ok" onClick={() => handleCommitConfirm()}>Commit</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {commitListOpen && (
+        <div className="overlay open" onClick={e => e.target === e.currentTarget && setCommitListOpen(false)}>
+          <div className="mbox">
+            <div className="mhdr">
+              <span className="m-title">Commit History</span>
+              <button className="m-x" onClick={() => setCommitListOpen(false)}>✕</button>
+            </div>
+            <div className="mbody" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+              {commitList.length === 0 ? (
+                <div style={{ padding: '20px', textAlign: 'center', color: '#888' }}>No commits found</div>
+              ) : (
+                commitList.map((c, i) => (
+                  <div key={i} style={{ padding: '8px 12px', borderBottom: '1px solid #333', fontFamily: 'monospace', fontSize: '13px' }}>
+                    <span style={{ color: '#888', marginRight: '8px' }}>{c.hash?.slice(0, 7)}</span>
+                    <span>{c.message}</span>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="mfoot">
+              <button className="btn-cancel" onClick={() => setCommitListOpen(false)}>Close</button>
             </div>
           </div>
         </div>

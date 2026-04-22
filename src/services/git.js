@@ -20,9 +20,14 @@ async function rollbackFiles(path, files) {
   return gitRequest('rollback', { path, files });
 }
 
+async function getCommitList(path, limit = 20) {
+  return gitRequest('log', { path, limit });
+}
+
 export const git = {
   getGitStatus,
   getGitDiff,
   commitFiles,
   rollbackFiles,
+  getCommitList,
 };

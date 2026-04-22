@@ -290,11 +290,22 @@ function MessageInput({ onSend, disabled, selectedModel }) {
 
 function Thread({ messages, thinking, contextPath }) {
   const bot = useRef();
-  useEffect(() => { bot.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, thinking]);
+  const atBottom = useRef(true);
+
+  useEffect(() => {
+    if (atBottom.current) {
+      bot.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, thinking]);
+
+  const handleScroll = (e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.target;
+    atBottom.current = scrollHeight - scrollTop - clientHeight < 50;
+  };
 
   if (messages === null) {
     return (
-      <div className="thread">
+      <div className="thread" onScroll={handleScroll}>
         <div className="empty">
           <div className="empty-orb">◈</div>
           <div className="empty-h">No session open</div>
@@ -305,7 +316,7 @@ function Thread({ messages, thinking, contextPath }) {
   }
 
   return (
-    <div className="thread">
+    <div className="thread" onScroll={handleScroll}>
       {contextPath && (
         <div className="ctx-note">
           ⚙ Working directory: <code>{contextPath}</code>
@@ -592,6 +603,7 @@ function App() {
     setMessages(null);
     setThinking(false);
     setDrawerOpen(false);
+    setDiffView(prev => ({ ...prev, active: false }));
     await refreshSessions();
     await loadMessages(sessId);
   }

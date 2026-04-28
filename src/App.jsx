@@ -14,10 +14,10 @@ function saveProjects(p) {
   try { localStorage.setItem(STORE, JSON.stringify(p)); } catch {}
 }
 function loadOpenSession() {
-  try { return localStorage.getItem(SESSION_STORE) || null; } catch { return null; }
+  try { return JSON.parse(localStorage.getItem(SESSION_STORE)) || null; } catch { return null; }
 }
-function saveOpenSession(id) {
-  try { localStorage.setItem(SESSION_STORE, id || ''); } catch {}
+function saveOpenSession(projId, sessId) {
+  try { localStorage.setItem(SESSION_STORE, JSON.stringify({ projectId: projId, sessionId: sessId })); } catch {}
 }
 
 const SLASHES = [
@@ -506,7 +506,7 @@ function App() {
   const [ocSessions, setOcSessions] = useState([]);
   const [projects, setProjects] = useState(loadProjects);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
-  const [curSessId, setCurSessId] = useState(() => loadOpenSession());
+  const [curSessId, setCurSessId] = useState(null);
   const [curProjId, setCurProjId] = useState(null);
   const [messages, setMessages] = useState(null);
   const [thinking, setThinking] = useState(false);
@@ -520,6 +520,7 @@ function App() {
   const [commitMsg, setCommitMsg] = useState('');
   const [commitListOpen, setCommitListOpen] = useState(false);
   const [commitList, setCommitList] = useState([]);
+  const [bootDone, setBootDone] = useState(false);
   const evtRef = useRef(null);
 
   function getMessageHandlers() {
@@ -581,9 +582,14 @@ function App() {
     try {
       const h = await oc.health();
       setStatus({ ok: true, label: 'v' + (h?.version ?? '?') });
+
+      const openSession = loadOpenSession();
+      setCurProjId(openSession?.projectId ?? null);
+      setCurSessId(openSession?.sessionId ?? null);
+
       await refreshSessions();
-      if (curSessId) {
-        const msgs = await loadMessages(curSessId);
+      if (openSession.sessionId) {
+        const msgs = await loadMessages(openSession.sessionId);
         if (msgs?.length) {
           const lastMsg = msgs[msgs.length - 1];
           if (lastMsg?.info?.role === 'assistant' && lastMsg?.info?.finish != 'stop') {
@@ -598,11 +604,15 @@ function App() {
       setStatus({ ok: false, label: 'opencode offline' });
       setTimeout(boot, 4000);
     }
+    setBootDone(true);
   }
 
   useEffect(() => { boot(); }, []);
 
-  useEffect(() => { saveOpenSession(curSessId); }, [curSessId]);
+  useEffect(() => {
+    if (!bootDone) return;
+    saveOpenSession(curProjId, curSessId);
+  }, [curProjId, curSessId]);
 
   async function refreshSessions() {
     try {

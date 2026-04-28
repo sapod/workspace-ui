@@ -583,13 +583,15 @@ function App() {
       setStatus({ ok: true, label: 'v' + (h?.version ?? '?') });
       await refreshSessions();
       if (curSessId) {
-        await loadMessages(curSessId);
-        const lastMsg = messages[messages.length - 1];
-        if (lastMsg.info.role === 'assistant' && lastMsg.info.finish != 'stop') {
-          const handlers = getMessageHandlers();
-          setThinking(true);
-          await oc.subscribeToSession(handlers.onDelta, handlers.onPart, handlers.onMessage);
-          setThinking(false);
+        const msgs = await loadMessages(curSessId);
+        if (msgs?.length) {
+          const lastMsg = msgs[msgs.length - 1];
+          if (lastMsg?.info?.role === 'assistant' && lastMsg?.info?.finish != 'stop') {
+            const handlers = getMessageHandlers();
+            setThinking(true);
+            await oc.subscribeToSession(handlers.onDelta, handlers.onPart, handlers.onMessage);
+            setThinking(false);
+          }
         }
       }
     } catch {
@@ -610,11 +612,13 @@ function App() {
   }
 
   async function loadMessages(sessId) {
-    if (!sessId) return;
+    if (!sessId) return [];
     try {
       const r = await oc.listMessages(sessId);
-      setMessages(Array.isArray(r) ? r : []);
-    } catch { setMessages([]); }
+      const msgs = Array.isArray(r) ? r : [];
+      setMessages(msgs);
+      return msgs;
+    } catch { setMessages([]); return []; }
   }
 
   function projSessions(proj) {

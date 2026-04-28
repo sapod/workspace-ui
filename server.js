@@ -5,6 +5,13 @@ import { join } from 'path';
 import { parseArgs } from 'util';
 import { execSync } from 'child_process';
 
+const IMAGE_EXTENSIONS = new Set(['png', 'svg', 'webp']);
+
+function isImageFile(file) {
+  const ext = file.split('.').pop()?.toLowerCase();
+  return ext ? IMAGE_EXTENSIONS.has(ext) : false;
+}
+
 const app = express();
 app.use(cors());
 
@@ -69,19 +76,22 @@ function gitDiff(p, file, res) {
   if (!file || !p || p === WORKSPACE) {
     return res.status(400).json({ error: 'file and path parameters required' });
   }
+  const isImage = isImageFile(file);
   let oldContent = '';
   let newContent = '';
   try {
-    oldContent = execSync(`git -C "${p}" show HEAD:"${file}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' });
+    const gitContent = execSync(`git -C "${p}" show HEAD:"${file}"`, { encoding: null, shell: '/bin/zsh' });
+    oldContent = isImage ? gitContent.toString('base64') : gitContent.toString('utf-8');
   } catch {
     oldContent = '';
   }
   try {
-    newContent = readFileSync(join(p, file), 'utf-8');
+    const fileContent = readFileSync(join(p, file));
+    newContent = isImage ? fileContent.toString('base64') : fileContent.toString('utf-8');
   } catch {
     newContent = '';
   }
-  return res.json({ oldContent, newContent });
+  return res.json({ oldContent, newContent, isImage: isImage || false });
 }
 
 function gitCommit(p, files, message, res) {

@@ -163,9 +163,43 @@ function DiffLine({ line }) {
   );
 }
 
-export function GitDiff({ filePath, oldString, newString }) {
-  const [raw] = useState(() => computeRawDiff(oldString, newString));
-  const [ranges, setRanges] = useState(() => computeInitialRanges(raw));
+export function GitDiff({ filePath, oldString, newString, isImage }) {
+  const [raw] = useState(() => isImage ? [] : computeRawDiff(oldString, newString));
+  const [ranges, setRanges] = useState(() => isImage ? [] : computeInitialRanges(raw));
+
+  if (isImage) {
+    const ext = filePath?.split('.').pop()?.toLowerCase();
+    const mimeType = ext === 'svg' ? 'image/svg+xml' : ext === 'webp' ? 'image/webp' : 'image/png';
+    const oldDataUrl = oldString ? `data:${mimeType};base64,${oldString}` : null;
+    const newDataUrl = newString ? `data:${mimeType};base64,${newString}` : null;
+    
+    return (
+      <div className="diff-file">
+        <div className="diff-file-header">
+          <span className="diff-file-icon">🖼</span>
+          <span className="diff-file-path">{filePath}</span>
+        </div>
+        <div className="diff-image-grid">
+          <div className="diff-image-panel">
+            <div className="diff-image-label">OLD</div>
+            {oldDataUrl ? (
+              <img src={oldDataUrl} alt="old" className="diff-image" />
+            ) : (
+              <div className="diff-image-empty">(not in HEAD)</div>
+            )}
+          </div>
+          <div className="diff-image-panel">
+            <div className="diff-image-label">NEW</div>
+            {newDataUrl ? (
+              <img src={newDataUrl} alt="new" className="diff-image" />
+            ) : (
+              <div className="diff-image-empty">(not present)</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const hunks = sliceHunks(raw, ranges);
 

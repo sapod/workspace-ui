@@ -1027,6 +1027,7 @@ async function handleCommitConfirm() {
                     filePath={diffView.selectedFile.path}
                     oldString={diffView.selectedFile.oldContent || ''}
                     newString={diffView.selectedFile.newContent || ''}
+                    isImage={diffView.selectedFile.isImage || false}
                   />
                 )}
               </div>

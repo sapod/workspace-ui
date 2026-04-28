@@ -492,6 +492,23 @@ body {
   background: rgba(224, 85, 85, .1);
 }
 
+.tb-refresh {
+  background: none;
+  border: 1px solid var(--text3);
+  color: var(--text2);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background .15s;
+  flex-shrink: 0;
+}
+
+.tb-refresh:hover {
+  background: var(--bg4);
+}
+
 /* Thread */
 .thread {
   flex: 1;

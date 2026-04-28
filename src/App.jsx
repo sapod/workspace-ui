@@ -522,12 +522,76 @@ function App() {
   const [commitList, setCommitList] = useState([]);
   const evtRef = useRef(null);
 
+  function getMessageHandlers() {
+    return {
+      onDelta: // onDelta — safe text append
+      (messageID, partID, partType, delta) => {
+      if (!delta) return;
+      setMessages(prev => prev.map(m => {
+        if (m.info?.id !== messageID) return m
+        const parts = m.parts ?? []
+        const existing = parts.find(p => p.id === partID)
+        if (existing) {
+          return {
+            ...m,
+            parts: parts.map(p =>
+              p.id === partID
+                ? { ...p, text: (p.text ?? '') + delta }  // ?? '' guards undefined
+                : p
+            )
+          }
+        } else {
+          return { ...m, parts: [...parts, { id: partID, type: partType, text: delta }] }
+        }
+      }))
+    },
+    onPart:
+    // onPart — only overwrite text/reasoning parts once they're finalized (time.end exists)
+    // always overwrite everything else (tool, step-start, step-finish, etc.)
+    (messageID, part) => {
+      setMessages(prev => prev.map(m => {
+        if (m.info?.id !== messageID) return m
+        const parts = m.parts ?? []
+        const existing = parts.find(p => p.id === part.id)
+
+        const isStreamingType = part.type === 'text' || part.type === 'reasoning'
+        const isFinalized = part.time?.end != null
+
+        if (existing) {
+          // For streaming types: only replace once finalized, otherwise keep accumulated delta text
+          if (isStreamingType && !isFinalized) return m
+          return { ...m, parts: parts.map(p => p.id === part.id ? part : p) }
+        } else {
+          return { ...m, parts: [...parts, part] }
+        }
+      }))
+    },
+      onMessage: // onMessage — create assistant message shell when first seen
+      (info) => {
+        if (info.role !== 'assistant') return
+        setMessages(prev => {
+          if (prev.find(m => m.info?.id === info.id)) return prev
+          return [...prev, { info, parts: [] }]
+        })
+      }
+    }
+  }
+
   async function boot() {
     try {
       const h = await oc.health();
       setStatus({ ok: true, label: 'v' + (h?.version ?? '?') });
       await refreshSessions();
-      if (curSessId) { await loadMessages(curSessId); }
+      if (curSessId) {
+        await loadMessages(curSessId);
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg.info.role === 'assistant' && lastMsg.info.finish != 'stop') {
+          const handlers = getMessageHandlers();
+          setThinking(true);
+          await oc.subscribeToSession(handlers.onDelta, handlers.onPart, handlers.onMessage);
+          setThinking(false);
+        }
+      }
     } catch {
       setStatus({ ok: false, label: 'opencode offline' });
       setTimeout(boot, 4000);
@@ -742,62 +806,12 @@ async function handleCommitConfirm() {
 
     const modelOverride = model || selectedModel;
     try {
+      const handlers = getMessageHandlers();
       await oc.sendMessage(
         curSessId,
         [{ type: 'text', text }], modelOverride ? { providerID: modelOverride.provider, modelID: modelOverride.name } : null,
         false,
-
-        // onDelta — safe text append
-        (messageID, partID, partType, delta) => {
-          if (!delta) return;
-          setMessages(prev => prev.map(m => {
-            if (m.info?.id !== messageID) return m
-            const parts = m.parts ?? []
-            const existing = parts.find(p => p.id === partID)
-            if (existing) {
-              return {
-                ...m,
-                parts: parts.map(p =>
-                  p.id === partID
-                    ? { ...p, text: (p.text ?? '') + delta }  // ?? '' guards undefined
-                    : p
-                )
-              }
-            } else {
-              return { ...m, parts: [...parts, { id: partID, type: partType, text: delta }] }
-            }
-          }))
-        },
-
-        // onPart — only overwrite text/reasoning parts once they're finalized (time.end exists)
-        // always overwrite everything else (tool, step-start, step-finish, etc.)
-        (messageID, part) => {
-          setMessages(prev => prev.map(m => {
-            if (m.info?.id !== messageID) return m
-            const parts = m.parts ?? []
-            const existing = parts.find(p => p.id === part.id)
-
-            const isStreamingType = part.type === 'text' || part.type === 'reasoning'
-            const isFinalized = part.time?.end != null
-
-            if (existing) {
-              // For streaming types: only replace once finalized, otherwise keep accumulated delta text
-              if (isStreamingType && !isFinalized) return m
-              return { ...m, parts: parts.map(p => p.id === part.id ? part : p) }
-            } else {
-              return { ...m, parts: [...parts, part] }
-            }
-          }))
-        },
-
-        // onMessage — create assistant message shell when first seen
-        (info) => {
-          if (info.role !== 'assistant') return
-          setMessages(prev => {
-            if (prev.find(m => m.info?.id === info.id)) return prev
-            return [...prev, { info, parts: [] }]
-          })
-        }
+        handlers.onDelta, handlers.onPart, handlers.onMessage
       );
       setThinking(false);
       await loadMessages(curSessId);
@@ -869,6 +883,17 @@ async function handleCommitConfirm() {
     if (!curSessId) return;
     try { await oc.abortSession(curSessId); } catch {}
     setThinking(false);
+  }
+
+  async function refreshSession() {
+    if (!curSessId) return;
+    await loadMessages(curSessId);
+    if (lastMsg.info.role === 'assistant' && lastMsg.info.finish != 'stop') {
+      const handlers = getMessageHandlers();
+      setThinking(true);
+      await oc.subscribeToSession(handlers.onDelta, handlers.onPart, handlers.onMessage);
+      setThinking(false);
+    }
   }
 
   async function toggleExpand(id) {
@@ -975,7 +1000,7 @@ async function handleCommitConfirm() {
                 <button className="tb-abort" onClick={abort}>■ stop</button>
               </>
             : curSessId
-              ? <span className="tb-status idle">ready</span>
+              ? <button className="tb-refresh" onClick={refreshSession} title="Reload session">↻</button>
               : null
           }
         </div>

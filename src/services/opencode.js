@@ -26,7 +26,7 @@ async function handleEvents(reader, onDelta, onPart, onMessage) {
     for (const line of chunk.split('\n')) {
       if (!line.startsWith('data: ')) continue
       try {
-        const event = JSON.parse(line.slice(6))
+        const event = JSON.parse(line.slice(6));
         if (event.type === 'server.heartbeat') {
           heartbeatCount ++;
           if (heartbeatCount > maxHeartbeatsToWait) {
@@ -91,7 +91,9 @@ class OpencodeService {
   }
 
   async getSession(id) {
-    const r = await this._client.session.get({ id });
+    const r = await this._client.session.get({
+      path: { id },
+    });
     return r.data;
   }
 
@@ -134,6 +136,11 @@ class OpencodeService {
     if (!noReply){
       await handleEvents(reader, onDelta, onPart, onMessage);
     }
+  }
+
+  async subscribeToSession(onDelta, onPart, onMessage) {
+    const reader = await subscribeEvents();
+    await handleEvents(reader, onDelta, onPart, onMessage);
   }
 
   async getPath() {

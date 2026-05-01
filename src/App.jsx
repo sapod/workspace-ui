@@ -527,46 +527,46 @@ function App() {
     return {
       onDelta: // onDelta — safe text append
       (messageID, partID, partType, delta) => {
-      if (!delta) return;
-      setMessages(prev => prev.map(m => {
-        if (m.info?.id !== messageID) return m
-        const parts = m.parts ?? []
-        const existing = parts.find(p => p.id === partID)
-        if (existing) {
-          return {
-            ...m,
-            parts: parts.map(p =>
-              p.id === partID
-                ? { ...p, text: (p.text ?? '') + delta }  // ?? '' guards undefined
-                : p
-            )
+        if (!delta) return;
+        setMessages(prev => prev.map(m => {
+          if (m.info?.id !== messageID) return m
+          const parts = m.parts ?? []
+          const existing = parts.find(p => p.id === partID)
+          if (existing) {
+            return {
+              ...m,
+              parts: parts.map(p =>
+                p.id === partID
+                  ? { ...p, text: (p.text ?? '') + delta }  // ?? '' guards undefined
+                  : p
+              )
+            }
+          } else {
+            return { ...m, parts: [...parts, { id: partID, type: partType, text: delta }] }
           }
-        } else {
-          return { ...m, parts: [...parts, { id: partID, type: partType, text: delta }] }
-        }
-      }))
-    },
-    onPart:
-    // onPart — only overwrite text/reasoning parts once they're finalized (time.end exists)
-    // always overwrite everything else (tool, step-start, step-finish, etc.)
-    (messageID, part) => {
-      setMessages(prev => prev.map(m => {
-        if (m.info?.id !== messageID) return m
-        const parts = m.parts ?? []
-        const existing = parts.find(p => p.id === part.id)
+        }))
+      },
+      onPart:
+      // onPart — only overwrite text/reasoning parts once they're finalized (time.end exists)
+      // always overwrite everything else (tool, step-start, step-finish, etc.)
+      (messageID, part) => {
+        setMessages(prev => prev.map(m => {
+          if (m.info?.id !== messageID) return m
+          const parts = m.parts ?? []
+          const existing = parts.find(p => p.id === part.id)
 
-        const isStreamingType = part.type === 'text' || part.type === 'reasoning'
-        const isFinalized = part.time?.end != null
+          const isStreamingType = part.type === 'text' || part.type === 'reasoning'
+          const isFinalized = part.time?.end != null
 
-        if (existing) {
-          // For streaming types: only replace once finalized, otherwise keep accumulated delta text
-          if (isStreamingType && !isFinalized) return m
-          return { ...m, parts: parts.map(p => p.id === part.id ? part : p) }
-        } else {
-          return { ...m, parts: [...parts, part] }
-        }
-      }))
-    },
+          if (existing) {
+            // For streaming types: only replace once finalized, otherwise keep accumulated delta text
+            if (isStreamingType && !isFinalized) return m
+            return { ...m, parts: parts.map(p => p.id === part.id ? part : p) }
+          } else {
+            return { ...m, parts: [...parts, part] }
+          }
+        }))
+      },
       onMessage: // onMessage — create assistant message shell when first seen
       (info) => {
         if (info.role !== 'assistant') return

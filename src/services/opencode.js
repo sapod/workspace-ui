@@ -55,7 +55,7 @@ async function handleEvents(reader, onDelta, onPart, onMessage) {
           const partType = messagePartTypes[event.properties.partID]
           const { messageID, partID, field, delta } = event.properties
           if (field === 'text' && (partType === 'text' || partType === 'reasoning')) {
-            onDelta?.(messageID, partID, delta)
+            onDelta?.(messageID, partID, field, delta)
           }
           heartbeatCount = 0;
         }

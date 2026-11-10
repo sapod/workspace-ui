@@ -595,6 +595,7 @@ function App() {
   const [bootDone, setBootDone] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [preview, setPreview] = useState({ open: false, port: '', url: '' });
 
   function getMessageHandlers() {
     return {
@@ -681,9 +682,14 @@ function App() {
           if (lastMsg?.info?.role === 'assistant' && lastMsg.info.finish == null
             && await oc.isSessionRunning(openSession.sessionId)) {
             const handlers = getMessageHandlers();
+            setSessionLoading(false);
+            setModelLoading(false);
             setThinking(true);
-            await oc.subscribeToSession(openSession.sessionId, handlers);
-            setThinking(false);
+            try {
+              await oc.subscribeToSession(openSession.sessionId, handlers);
+            } finally {
+              setThinking(false);
+            }
             msgs = await loadMessages(openSession.sessionId);
           }
           await syncSelectedModelForSession(openSession.sessionId, msgs);
@@ -705,6 +711,20 @@ function App() {
     if (!bootDone) return;
     saveOpenSession(curProjId, curSessId);
   }, [curProjId, curSessId]);
+
+  useEffect(() => {
+    if (!curProjId) {
+      setPreview({ open: false, port: '', url: '' });
+      return;
+    }
+    const port = getProjectPreviewPort(curProjId);
+    if (port && /^\d+$/.test(port)) {
+      const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
+      setPreview({ open: getProjectPreviewOpen(curProjId), port, url });
+    } else {
+      setPreview({ open: false, port: '', url: '' });
+    }
+  }, [curProjId, projects]);
 
   function modelFromSessionData(session, msgs = []) {
     const raw = session?.model ?? session?.config?.model;
@@ -1076,18 +1096,52 @@ async function handleCommitConfirm() {
     setThinking(false);
   }
 
-  async function refreshSession() {
-    if (!curSessId) return;
-    const msgs = await loadMessages(curSessId);
-    const lastMsg = msgs[msgs.length - 1];
-    if (lastMsg?.info?.role === 'assistant' && lastMsg.info.finish == null
-      && await oc.isSessionRunning(curSessId)) {
-      const handlers = getMessageHandlers();
-      setThinking(true);
-      await oc.subscribeToSession(curSessId, handlers);
-      setThinking(false);
-      await loadMessages(curSessId);
+  function getProjectPreviewPort(projId) {
+    const proj = projects.find(p => p.id === projId);
+    return proj?.previewPort ? String(proj.previewPort) : '';
+  }
+
+  function getProjectPreviewOpen(projId) {
+    const proj = projects.find(p => p.id === projId);
+    return !!proj?.previewOpen;
+  }
+
+  function saveProjectPreviewState(projId, { port, open } = {}) {
+    if (!projId) return;
+    const next = projects.map(p => {
+      if (p.id !== projId) return p;
+      const updated = { ...p };
+      if (port !== undefined) updated.previewPort = port;
+      if (open !== undefined) updated.previewOpen = open;
+      return updated;
+    });
+    setProjects(next);
+    saveProjects(next);
+  }
+
+  function openPreviewForPort(port, { saveForProject = false, open = true } = {}) {
+    if (!/^\d+$/.test(port)) {
+      toast('Invalid port');
+      return;
     }
+    const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
+    setPreview({ open, port, url });
+    if (saveForProject && curProjId) saveProjectPreviewState(curProjId, { port, open });
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  }
+
+  function openPreview() {
+    if (!curSessId || thinking) return;
+    let port = getProjectPreviewPort(curProjId) || preview.port;
+    if (!port) {
+      const input = window.prompt('Enter port for web preview', '3000');
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      if (!input) return;
+      port = input.trim();
+      openPreviewForPort(port, { saveForProject: true, open: true });
+      return;
+    }
+    openPreviewForPort(port, { saveForProject: true, open: true });
   }
 
   async function toggleExpand(id) {
@@ -1180,105 +1234,127 @@ async function handleCommitConfirm() {
       </nav>
 
       <div className="main">
-        <div className="topbar">
-          <button className="burger" onClick={() => setDrawerOpen(o => !o)}>
-            <span /><span /><span />
-          </button>
-          <div className="tb-info">
-            <div className="tb-name">{curProj?.name ?? 'opencode'}</div>
-            <div className="tb-sub">{sessName ?? (curProj ? 'no session selected' : 'no project selected')}</div>
-          </div>
-          {thinking
-            ? <>
-                <span className="tb-status thinking">● thinking</span>
-                <button className="tb-abort" onClick={abort}>■ stop</button>
-              </>
-            : curSessId
-              ? <button className="tb-refresh" onClick={refreshSession} title="Reload session">↻</button>
-              : null
-          }
-        </div>
-
-        {sessionLoading ? (
-          <div className="session-loading" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div className="spin" style={{ width: 28, height: 28 }} />
-          </div>
-        ) : fileEditor.active ? (
-          <FileEditor
-            filePath={fileEditor.filePath}
-            fileContent={fileEditor.fileContent}
-            raw={fileEditor.raw}
-            onSave={saveFile}
-            onClose={() => setFileEditor({ active: false, filePath: null, fileContent: null, raw: null })}
-          />
-        ) : diffView.active ? (
-          <div className="diff-viewer">
-            <div className="diff-header">
-              <button className="back-btn" onClick={diffView.selectedFile ? goBackToFileList : closeDiffView}>
-                {diffView.selectedFile ? '← Back' : '✕'}
-              </button>
-              <span className="diff-title">Git Diffs</span>
+        {preview.url && (
+          <div className="preview-viewer" style={{ display: preview.open ? 'flex' : 'none' }}>
+            <div className="preview-header">
+              <button className="back-btn" onClick={() => {
+                setPreview(p => ({ ...p, open: false }));
+                saveProjectPreviewState(curProjId, { open: false });
+              }}>✕</button>
+              <span className="preview-url">{preview.url}</span>
+              <button className="diff-action-btn" onClick={() => {
+                const input = window.prompt('Enter port for web preview', getProjectPreviewPort(curProjId) || preview.port || '3000');
+                if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                if (!input) return;
+                openPreviewForPort(input.trim(), { saveForProject: true, open: true });
+              }}>Port</button>
+              <button className="diff-action-btn" onClick={() => window.open(preview.url, '_blank', 'noopener,noreferrer')} title="Open in new tab">↗</button>
             </div>
-            {!diffView.selectedFile ? (
-              <div className="diff-file-list">
-                <div className="diff-actions">
-                  <button className="diff-action-btn" onClick={handleCommitClick}>Commit</button>
-                  <button className="diff-action-btn" onClick={handleRollbackClick}>Rollback</button>
-                  <button className="diff-action-btn" onClick={handleShowCommits} title="Commit History"><i className="fa-solid fa-code-branch"></i></button>
+            <iframe className="preview-frame" src={preview.url} title="App preview" />
+          </div>
+        )}
+        {!preview.open && (
+          <>
+            <div className="topbar">
+              <button className="burger" onClick={() => setDrawerOpen(o => !o)}>
+                <span /><span /><span />
+              </button>
+              <div className="tb-info">
+                <div className="tb-name">{curProj?.name ?? 'opencode'}</div>
+                <div className="tb-sub">{sessName ?? (curProj ? 'no session selected' : 'no project selected')}</div>
+              </div>
+              {thinking ? (
+                <>
+                  <span className="tb-status thinking">● thinking</span>
+                  <button className="tb-abort" onClick={abort}>■ stop</button>
+                </>
+              ) : curSessId ? (
+                <button className="tb-preview" onClick={openPreview} title={preview.port ? `Open preview (:${preview.port})` : 'Open web preview'}>👁</button>
+              ) : null}
+            </div>
+
+            {sessionLoading ? (
+              <div className="session-loading" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div className="spin" style={{ width: 28, height: 28 }} />
+              </div>
+            ) : fileEditor.active ? (
+              <FileEditor
+                filePath={fileEditor.filePath}
+                fileContent={fileEditor.fileContent}
+                raw={fileEditor.raw}
+                onSave={saveFile}
+                onClose={() => setFileEditor({ active: false, filePath: null, fileContent: null, raw: null })}
+              />
+            ) : diffView.active ? (
+              <div className="diff-viewer">
+                <div className="diff-header">
+                  <button className="back-btn" onClick={diffView.selectedFile ? goBackToFileList : closeDiffView}>
+                    {diffView.selectedFile ? '← Back' : '✕'}
+                  </button>
+                  <span className="diff-title">Git Diffs</span>
                 </div>
-                {diffView.loading ? (
-                  <div className="diff-loading">Loading...</div>
-                ) : diffView.files.length === 0 ? (
-                  <div className="diff-empty">No changes or not a git repository</div>
-                ) : (
-                  diffView.files.map(f => (
-                    <div key={f.path} className="diff-file-row" onClick={() => loadGitDiff(f.path)}>
-                      <input
-                        type="checkbox"
-                        checked={diffView.selectedFiles?.includes(f.path) || false}
-                        onChange={e => { e.stopPropagation(); toggleFileCheckbox(f.path); }}
-                        onClick={e => e.stopPropagation()}
-                      />
-                      <span className={`diff-status ${f.isUnversioned ? 'unversioned' : f.isNew ? 'new' : f.isDeleted ? 'deleted' : 'modified'}`}>
-                        {f.isUnversioned ? 'U' : f.isNew ? 'A' : f.isDeleted ? 'D' : 'M'}
-                      </span>
-                      <span className="diff-filename">{f.path}</span>
+                {!diffView.selectedFile ? (
+                  <div className="diff-file-list">
+                    <div className="diff-actions">
+                      <button className="diff-action-btn" onClick={handleCommitClick}>Commit</button>
+                      <button className="diff-action-btn" onClick={handleRollbackClick}>Rollback</button>
+                      <button className="diff-action-btn" onClick={handleShowCommits} title="Commit History"><i className="fa-solid fa-code-branch"></i></button>
                     </div>
-                  ))
+                    {diffView.loading ? (
+                      <div className="diff-loading">Loading...</div>
+                    ) : diffView.files.length === 0 ? (
+                      <div className="diff-empty">No changes or not a git repository</div>
+                    ) : (
+                      diffView.files.map(f => (
+                        <div key={f.path} className="diff-file-row" onClick={() => loadGitDiff(f.path)}>
+                          <input
+                            type="checkbox"
+                            checked={diffView.selectedFiles?.includes(f.path) || false}
+                            onChange={e => { e.stopPropagation(); toggleFileCheckbox(f.path); }}
+                            onClick={e => e.stopPropagation()}
+                          />
+                          <span className={`diff-status ${f.isUnversioned ? 'unversioned' : f.isNew ? 'new' : f.isDeleted ? 'deleted' : 'modified'}`}>
+                            {f.isUnversioned ? 'U' : f.isNew ? 'A' : f.isDeleted ? 'D' : 'M'}
+                          </span>
+                          <span className="diff-filename">{f.path}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <div className="diff-content">
+                    {diffView.selectedFile.loading ? (
+                      <div className="diff-loading">Loading diff...</div>
+                    ) : diffView.selectedFile.error ? (
+                      <div className="diff-error">{diffView.selectedFile.error}</div>
+                    ) : (
+                      <GitDiff
+                        filePath={diffView.selectedFile.path}
+                        oldString={diffView.selectedFile.oldContent || ''}
+                        newString={diffView.selectedFile.newContent || ''}
+                        isImage={diffView.selectedFile.isImage || false}
+                        openEditor={openInEditor}
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             ) : (
-              <div className="diff-content">
-                {diffView.selectedFile.loading ? (
-                  <div className="diff-loading">Loading diff...</div>
-                ) : diffView.selectedFile.error ? (
-                  <div className="diff-error">{diffView.selectedFile.error}</div>
-                ) : (
-                  <GitDiff
-                    filePath={diffView.selectedFile.path}
-                    oldString={diffView.selectedFile.oldContent || ''}
-                    newString={diffView.selectedFile.newContent || ''}
-                    isImage={diffView.selectedFile.isImage || false}
-                    openEditor={openInEditor}
-                  />
-                )}
-              </div>
+              <Thread
+                messages={messages}
+                thinking={thinking}
+                contextPath={curProj?.path ?? null}
+              />
             )}
-          </div>
-        ) : (
-          <Thread
-            messages={messages}
-            thinking={thinking}
-            contextPath={curProj?.path ?? null}
-          />
-        )}
 
-        <MessageInput
-          onSend={handleSend}
-          disabled={!curSessId || thinking || sessionLoading}
-          selectedModel={sessionLoading ? null : selectedModel}
-          modelLoading={false}
-        />
+            <MessageInput
+              onSend={handleSend}
+              disabled={!curSessId || thinking || sessionLoading}
+              selectedModel={sessionLoading ? null : selectedModel}
+              modelLoading={false}
+            />
+          </>
+        )}
       </div>
 
       <NewProjectModal

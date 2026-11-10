@@ -250,7 +250,7 @@ function SlashMenu({ query, selIdx, onSelect }) {
   );
 }
 
-function MessageInput({ onSend, disabled, selectedModel }) {
+function MessageInput({ onSend, disabled, selectedModel, modelLoading }) {
   const [text, setText] = useState('');
   const [focused, setFocused] = useState(false);
   const [hist, setHist] = useState([]);
@@ -332,7 +332,9 @@ function MessageInput({ onSend, disabled, selectedModel }) {
             onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
           <div className="inp-foot">
             <span className="inp-hint"><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> history</span>
-            {selectedModel && <span className="inp-model">{selectedModel.label ?? selectedModel.name}</span>}
+            <span className={`inp-model${modelLoading ? ' inp-model-loading' : ''}`}>
+              {modelLoading ? <span className="spin" /> : (selectedModel ? (selectedModel.label ?? selectedModel.name) : '')}
+            </span>
             <button className="send-btn" disabled={disabled || !text.trim()} onClick={submit}>Send ↵</button>
           </div>
         </div>
@@ -580,8 +582,9 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [newProjOpen, setNewProjOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const DEFAULT_SESSION_MODEL = { provider: 'opencode', name: 'beam-free' };
   const [availableModels, setAvailableModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState({ provider: 'opencode', name: 'big-pickle' });
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_SESSION_MODEL);
   const [workspace, setWorkspace] = useState({ root: '', home: '' });
   const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
   const [fileEditor, setFileEditor] = useState({ active: false, filePath: null, fileContent: null, raw: null });
@@ -590,6 +593,8 @@ function App() {
   const [commitListOpen, setCommitListOpen] = useState(false);
   const [commitList, setCommitList] = useState([]);
   const [bootDone, setBootDone] = useState(false);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
 
   function getMessageHandlers() {
     return {
@@ -668,15 +673,23 @@ function App() {
 
       await refreshSessions();
       if (openSession?.sessionId) {
-        const msgs = await loadMessages(openSession.sessionId);
-        const lastMsg = msgs[msgs.length - 1];
-        if (lastMsg?.info?.role === 'assistant' && lastMsg.info.finish == null
-          && await oc.isSessionRunning(openSession.sessionId)) {
-          const handlers = getMessageHandlers();
-          setThinking(true);
-          await oc.subscribeToSession(openSession.sessionId, handlers);
-          setThinking(false);
-          await loadMessages(openSession.sessionId);
+        setSessionLoading(true);
+        setModelLoading(true);
+        try {
+          let msgs = await loadMessages(openSession.sessionId);
+          const lastMsg = msgs[msgs.length - 1];
+          if (lastMsg?.info?.role === 'assistant' && lastMsg.info.finish == null
+            && await oc.isSessionRunning(openSession.sessionId)) {
+            const handlers = getMessageHandlers();
+            setThinking(true);
+            await oc.subscribeToSession(openSession.sessionId, handlers);
+            setThinking(false);
+            msgs = await loadMessages(openSession.sessionId);
+          }
+          await syncSelectedModelForSession(openSession.sessionId, msgs);
+        } finally {
+          setModelLoading(false);
+          setSessionLoading(false);
         }
       }
     } catch {
@@ -692,6 +705,39 @@ function App() {
     if (!bootDone) return;
     saveOpenSession(curProjId, curSessId);
   }, [curProjId, curSessId]);
+
+  function modelFromSessionData(session, msgs = []) {
+    const raw = session?.model ?? session?.config?.model;
+    const candidates = [raw];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m?.info?.role === 'assistant' && m.info.model) candidates.push(m.info.model);
+    }
+    for (const c of candidates) {
+      if (!c) continue;
+      const provider = c.providerID ?? c.provider;
+      const name = c.modelID ?? c.id ?? c.name;
+      if (provider && name) {
+        const label = c.modelName ?? c.label ?? name;
+        const ref = { provider, name, label };
+        if (c.variant) ref.variant = c.variant;
+        return ref;
+      }
+    }
+    return null;
+  }
+
+  async function syncSelectedModelForSession(sessId, msgs = null) {
+    if (!sessId) return;
+    try {
+      const [session, loadedMsgs] = await Promise.all([
+        oc.getSession(sessId).catch(() => null),
+        msgs ? Promise.resolve(msgs) : oc.listMessages(sessId).catch(() => []),
+      ]);
+      const model = modelFromSessionData(session, Array.isArray(loadedMsgs) ? loadedMsgs : []);
+      if (model) setSelectedModel(model);
+    } catch {}
+  }
 
   async function refreshSessions() {
     try {
@@ -761,15 +807,23 @@ function App() {
     setThinking(false);
     setDrawerOpen(false);
     setDiffView(prev => ({ ...prev, active: false }));
-    await refreshSessions();
-    await loadMessages(sessId);
+    setSessionLoading(true);
+    setModelLoading(true);
+    try {
+      await refreshSessions();
+      const msgs = await loadMessages(sessId);
+      await syncSelectedModelForSession(sessId, msgs);
+    } finally {
+      setModelLoading(false);
+      setSessionLoading(false);
+    }
   }
 
   async function newSessionInProject(proj) {
     try {
       const title = proj.name + ' · ' + new Date().toLocaleDateString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
       const directory = resolveProjectPath(proj.path, workspace);
-      const s = await oc.createSession(title, { directory: directory || undefined, model: selectedModel });
+      const s = await oc.createSession(title, { directory: directory || undefined, model: DEFAULT_SESSION_MODEL });
       if (!s?.id) throw new Error('Session creation returned no id');
       const nextProjects = projects.map(p => {
         if (p.id !== proj.id) return p;
@@ -780,6 +834,7 @@ function App() {
       setProjects(nextProjects);
       saveProjects(nextProjects);
       await refreshSessions();
+      setSelectedModel(DEFAULT_SESSION_MODEL);
       await selectSession(proj.id, s.id);
 
       if (directory) {
@@ -789,7 +844,7 @@ function App() {
           `All file reads, writes, edits, and shell commands must use \`${directory}\` as the project root.\n` +
           `Always cd into \`${directory}\` before running shell commands.`;
         try {
-          await oc.sendMessage(s.id, primer, { resume: false, model: selectedModel });
+          await oc.sendMessage(s.id, primer, { resume: false, model: DEFAULT_SESSION_MODEL });
           setThinking(false);
           await loadMessages(s.id);
         } catch (e) {
@@ -1144,7 +1199,11 @@ async function handleCommitConfirm() {
           }
         </div>
 
-        {fileEditor.active ? (
+        {sessionLoading ? (
+          <div className="session-loading" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="spin" style={{ width: 28, height: 28 }} />
+          </div>
+        ) : fileEditor.active ? (
           <FileEditor
             filePath={fileEditor.filePath}
             fileContent={fileEditor.fileContent}
@@ -1216,8 +1275,9 @@ async function handleCommitConfirm() {
 
         <MessageInput
           onSend={handleSend}
-          disabled={!curSessId || thinking}
-          selectedModel={selectedModel}
+          disabled={!curSessId || thinking || sessionLoading}
+          selectedModel={sessionLoading ? null : selectedModel}
+          modelLoading={false}
         />
       </div>
 

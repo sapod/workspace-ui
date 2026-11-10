@@ -20,6 +20,22 @@ function saveOpenSession(projId, sessId) {
   try { localStorage.setItem(SESSION_STORE, JSON.stringify({ projectId: projId, sessionId: sessId })); } catch {}
 }
 
+// The V2 server rejects relative and `~` directories with a blank 500, so
+// every project path is resolved to an absolute path before it is stored/sent.
+function resolveProjectPath(input, { root = '', home = '' } = {}) {
+  const raw = (input ?? '').trim();
+  const rootPath = root.replace(/\/+$/, '');
+  // Fall back to deriving the home dir from a `…/workspace/…` root when the
+  // helper server has not been restarted with the new `home` field yet.
+  const homePath = (home || (rootPath.includes('/workspace/') ? rootPath.slice(0, rootPath.indexOf('/workspace/')) : '')).replace(/\/+$/, '');
+  if (!raw) return root || '';
+  if (raw === '~') return homePath || raw;
+  if (raw.startsWith('~/')) return homePath ? `${homePath}/${raw.slice(2)}` : raw;
+  if (raw.startsWith('/')) return raw;
+  if (raw.startsWith('./')) return rootPath ? `${rootPath}/${raw.slice(2)}` : raw;
+  return rootPath ? `${rootPath}/${raw}` : raw;
+}
+
 const SLASHES = [
   { cmd: '/new', desc: 'New session in this project' },
   { cmd: '/sessions', desc: 'List sessions' },
@@ -87,21 +103,50 @@ function RichText({ text, className }) {
 
 function ToolBlock({ inv }) {
   const [open, setOpen] = useState(false);
-  const isRun = inv.state === 'call';
-  const isEdit = (inv.toolName || '').toLowerCase().includes('edit');
-  const editArgs = isEdit && inv.args?.filePath ? inv.args : null;
+  const toolName = inv.tool ?? inv.toolName ?? 'tool';
+  const state = inv.state;
+  const status = typeof state === 'string' ? state : state?.status;
+  const isRun = status === 'streaming' || status === 'running' || status === 'call';
+  const failed = status === 'error';
+  const input = state?.input ?? inv.args;
+  const content = state?.content;
+  const error = state?.error;
+
+  let result = inv.result;
+  if (error) {
+    result = typeof error === 'string' ? error : (error.message ?? JSON.stringify(error));
+  } else if (content?.length) {
+    result = content.map(c => c.text ?? JSON.stringify(c)).join('\n');
+  }
+
+  const rawInput = input && typeof input === 'object' ? input : null;
+  const filePath = rawInput?.filePath ?? rawInput?.path;
+  const lowerName = toolName.toLowerCase();
+  const isEdit = lowerName.includes('edit') || lowerName.includes('write') || lowerName.includes('patch');
+  let editArgs = null;
+  if (isEdit && filePath) {
+    if (rawInput.oldString != null || rawInput.newString != null) {
+      editArgs = { filePath, oldString: rawInput.oldString ?? '', newString: rawInput.newString ?? '' };
+    } else if (rawInput.content != null) {
+      editArgs = { filePath, oldString: '', newString: rawInput.content };
+    }
+  }
+
   const lines = [];
-  if (inv.args) lines.push('INPUT:\n' + JSON.stringify(inv.args, null, 2));
-  if (inv.result != null) {
-    const r = typeof inv.result === 'string' ? inv.result : JSON.stringify(inv.result, null, 2);
+  if (input != null) {
+    const shown = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
+    if (shown) lines.push('INPUT:\n' + shown);
+  }
+  if (result != null) {
+    const r = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
     lines.push('OUTPUT:\n' + r.slice(0, 2000) + (r.length > 2000 ? '\n…' : ''));
   }
   return (
     <div className="tool-wrap">
       <div className="tool-hdr" onClick={() => setOpen(o => !o)}>
-        <span>{toolIcon(inv.toolName)}</span>
-        <span className="tool-label">{inv.toolName || 'tool'}</span>
-        <span className={`tool-st ${isRun ? 'run' : 'ok'}`}>{isRun ? '● running' : '✓ done'}</span>
+        <span>{toolIcon(toolName)}</span>
+        <span className="tool-label">{toolName}</span>
+        <span className={`tool-st ${isRun ? 'run' : 'ok'}`}>{failed ? '✕ failed' : isRun ? '● running' : '✓ done'}</span>
       </div>
       {open && (
         <div className="tool-body">
@@ -146,24 +191,31 @@ function MessageBubble({ msg }) {
   }
 
   if (role === 'assistant') {
-    const isAborted = msg?.info?.error?.name === 'MessageAbortedError';
+    const err = msg?.info?.error;
+    const isAborted = err?.name === 'MessageAbortedError'
+      || err?.type?.toLowerCase?.().includes('abort');
     return (
       <div className="msg">
         <div className="msg-who who-ai">opencode {isAborted && <span className="msg-aborted">(aborted)</span>}</div>
-        {isAborted ? null : parts.map((p, i) => {
-          if (p.type === 'text') {
-            if (!p.text) return null;
-            return <RichText key={i} text={p.text} className="bub-ai" />;
-          }
-          if (p.type === 'reasoning') {
-            if (!p.text) return null;
-            return <div key={i} className="reasoning">{p.text}</div>;
-          }
-          if (p.type === 'tool') return <ToolBlock key={i} inv={{ toolName: p.tool, result: p.state?.output, args: p.state?.input }} />;
-          if (p.type === 'tool-invocation') return <ToolBlock key={i} inv={p.toolInvocation || {}} />;
-          if (p.type === 'step-start' || p.type === 'step-finish') return null;
-          return null;
-        })}
+        {isAborted ? null : (
+          <>
+            {err && <div className="reasoning">⚠ {err.message ?? err.type ?? 'Request failed'}</div>}
+            {parts.map((p, i) => {
+              if (p.type === 'text') {
+                if (!p.text) return null;
+                return <RichText key={i} text={p.text} className="bub-ai" />;
+              }
+              if (p.type === 'reasoning') {
+                if (!p.text) return null;
+                return <div key={i} className="reasoning">{p.text}</div>;
+              }
+              if (p.type === 'tool') return <ToolBlock key={i} inv={p} />;
+              if (p.type === 'tool-invocation') return <ToolBlock key={i} inv={p.toolInvocation || {}} />;
+              if (p.type === 'step-start' || p.type === 'step-finish') return null;
+              return null;
+            })}
+          </>
+        )}
       </div>
     );
   }
@@ -279,7 +331,7 @@ function MessageInput({ onSend, disabled, selectedModel }) {
             onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
           <div className="inp-foot">
             <span className="inp-hint"><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> history</span>
-            {selectedModel && <span className="inp-model">{selectedModel.name}</span>}
+            {selectedModel && <span className="inp-model">{selectedModel.label ?? selectedModel.name}</span>}
             <button className="send-btn" disabled={disabled || !text.trim()} onClick={submit}>Send ↵</button>
           </div>
         </div>
@@ -342,10 +394,13 @@ function Thread({ messages, thinking, contextPath }) {
   );
 }
 
-function NewProjectModal({ open, onClose, onDone, toast }) {
+function NewProjectModal({ open, onClose, onDone, toast, workspace }) {
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [selPath, setSelPath] = useState('');
+  const [selAbs, setSelAbs] = useState('');
+  const [root, setRoot] = useState('');
+  const [home, setHome] = useState('');
   const [dirs, setDirs] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -354,18 +409,25 @@ function NewProjectModal({ open, onClose, onDone, toast }) {
     setName('');
     setPath('');
     setSelPath('');
+    setSelAbs('');
+    setRoot('');
+    setHome('');
     setDirs(null);
     
     async function fetchDirs() {
       try {
-        const pi = await oc.getPath();
-        const root = pi?.path ?? pi?.cwd ?? '';
-        const nodes = await oc.listFiles(root);
+        const pi = workspace?.root
+          ? { path: workspace.root, cwd: workspace.root, home: workspace.home ?? '' }
+          : await oc.getPath();
+        const rootPath = pi?.path ?? pi?.cwd ?? '';
+        setRoot(rootPath);
+        setHome(pi?.home ?? '');
+        const nodes = await oc.listFiles(rootPath);
         const list = (Array.isArray(nodes) ? nodes : [])
           .filter(n => n.type === 'directory' || n.isDirectory)
           .map(n => {
             const abs = n.path || n.name || '';
-            const rel = root && abs.startsWith(root) ? abs.slice(root.length).replace(/^\/+/, '') : abs;
+            const rel = rootPath && abs.startsWith(rootPath) ? abs.slice(rootPath.length).replace(/^\/+/, '') : abs;
             return { label: rel.split('/').pop() || rel, rel, abs };
           })
           .filter(f => f.label && !f.label.startsWith('.'))
@@ -379,15 +441,19 @@ function NewProjectModal({ open, onClose, onDone, toast }) {
     fetchDirs();
   }, [open]);
 
-  function pick(rel, label) {
+  function pick(rel, label, abs) {
     setSelPath(rel);
+    setSelAbs(abs);
     setPath(rel);
     setName(label);
   }
 
   function submit() {
-    const n = name.trim(), p = (path || selPath).trim();
+    const n = name.trim();
+    const input = (path || selPath).trim();
+    const p = selAbs || resolveProjectPath(input, { root, home });
     if (!n) { toast('Enter a project name'); return; }
+    if (!p || !p.startsWith('/')) { toast('Project path must be an absolute path'); return; }
     setBusy(true);
     onDone({ name: n, path: p });
     setBusy(false);
@@ -415,19 +481,19 @@ function NewProjectModal({ open, onClose, onDone, toast }) {
               ? <div style={{ fontSize: 11, color: 'var(--text3)', padding: '4px 0' }}>Scanning workspace…</div>
               : <div className="folder-grid">
                   <div className={`folder-chip${selPath === '' && path === '' ? ' sel' : ''}`}
-                    onClick={() => { setSelPath(''); setPath(''); }}>
+                    onClick={() => { setSelPath(''); setSelAbs(root); setPath(''); }}>
                     <span>🏠</span><span>workspace root</span>
                   </div>
                   {dirs.map(d => (
                     <div key={d.abs} className={`folder-chip${selPath === d.rel ? ' sel' : ''}`}
-                      onClick={() => pick(d.rel, d.label)} title={d.abs}>
+                      onClick={() => pick(d.rel, d.label, d.abs)} title={d.abs}>
                       <span>📁</span><span>{d.label}</span>
                     </div>
                   ))}
                 </div>
             }
             <input style={{ marginTop: 7 }} type="text" placeholder="Or type a path…"
-              value={path} onChange={e => { setPath(e.target.value); setSelPath(''); }}
+              value={path} onChange={e => { setPath(e.target.value); setSelPath(''); setSelAbs(''); }}
               onKeyDown={e => e.key === 'Enter' && submit()} autoComplete="off" />
             <span className="field-note">opencode will be instructed to treat this as the project root for all file and shell operations.</span>
           </div>
@@ -451,7 +517,7 @@ function ModelPickerModal({ open, onClose, models, onSelect }) {
   }, [open]);
 
   const filtered = models.filter(m => 
-    (m.provider + '/' + m.name).toLowerCase().includes(search.toLowerCase())
+    (m.provider + '/' + (m.label ?? m.name)).toLowerCase().includes(search.toLowerCase())
   );
 
   function handleKey(e) {
@@ -486,7 +552,7 @@ function ModelPickerModal({ open, onClose, models, onSelect }) {
               <div key={m.provider + '/' + m.name} className={`model-row${i === selIdx ? ' sel' : ''}`}
                 onClick={() => onSelect(m)}>
                 <span className="model-prov">{m.provider}</span>
-                <span className="model-name">{m.name}</span>
+                <span className="model-name">{m.label ?? m.name}</span>
               </div>
             ))}
           </div>
@@ -515,13 +581,13 @@ function App() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState({ provider: 'opencode', name: 'big-pickle' });
+  const [workspace, setWorkspace] = useState({ root: '', home: '' });
   const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
   const [commitMsgOpen, setCommitMsgOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState('');
   const [commitListOpen, setCommitListOpen] = useState(false);
   const [commitList, setCommitList] = useState([]);
   const [bootDone, setBootDone] = useState(false);
-  const evtRef = useRef(null);
 
   function getMessageHandlers() {
     return {
@@ -567,11 +633,16 @@ function App() {
           }
         }))
       },
-      onMessage: // onMessage — create assistant message shell when first seen
+      onMessage: // onMessage — create or update the assistant message shell
       (info) => {
         if (info.role !== 'assistant') return
         setMessages(prev => {
-          if (prev.find(m => m.info?.id === info.id)) return prev
+          const existing = prev.find(m => m.info?.id === info.id)
+          if (existing) {
+            return prev.map(m => m.info?.id === info.id
+              ? { ...m, info: { ...m.info, ...info } }
+              : m)
+          }
           return [...prev, { info, parts: [] }]
         })
       }
@@ -581,23 +652,29 @@ function App() {
   async function boot() {
     try {
       const h = await oc.health();
+      if (!h.ok) throw new Error('opencode offline');
       setStatus({ ok: true, label: 'v' + (h?.version ?? '?') });
+
+      try {
+        const pi = await oc.getPath();
+        setWorkspace({ root: pi?.path ?? pi?.cwd ?? '', home: pi?.home ?? '' });
+      } catch { /* workspace info is best-effort */ }
 
       const openSession = loadOpenSession();
       setCurProjId(openSession?.projectId ?? null);
       setCurSessId(openSession?.sessionId ?? null);
 
       await refreshSessions();
-      if (openSession.sessionId) {
+      if (openSession?.sessionId) {
         const msgs = await loadMessages(openSession.sessionId);
-        if (msgs?.length) {
-          const lastMsg = msgs[msgs.length - 1];
-          if (lastMsg?.info?.role === 'assistant' && lastMsg?.info?.finish != 'stop') {
-            const handlers = getMessageHandlers();
-            setThinking(true);
-            await oc.subscribeToSession(handlers.onDelta, handlers.onPart, handlers.onMessage);
-            setThinking(false);
-          }
+        const lastMsg = msgs[msgs.length - 1];
+        if (lastMsg?.info?.role === 'assistant' && lastMsg.info.finish == null
+          && await oc.isSessionRunning(openSession.sessionId)) {
+          const handlers = getMessageHandlers();
+          setThinking(true);
+          await oc.subscribeToSession(openSession.sessionId, handlers);
+          setThinking(false);
+          await loadMessages(openSession.sessionId);
         }
       }
     } catch {
@@ -689,19 +766,28 @@ function App() {
   async function newSessionInProject(proj) {
     try {
       const title = proj.name + ' · ' + new Date().toLocaleDateString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const s = await oc.createSession(title);
-      linkSession(proj.id, s.id);
+      const directory = resolveProjectPath(proj.path, workspace);
+      const s = await oc.createSession(title, { directory: directory || undefined, model: selectedModel });
+      if (!s?.id) throw new Error('Session creation returned no id');
+      const nextProjects = projects.map(p => {
+        if (p.id !== proj.id) return p;
+        const updated = { ...p, sessionIds: p.sessionIds.includes(s.id) ? p.sessionIds : [...p.sessionIds, s.id] };
+        if (directory && directory !== proj.path) updated.path = directory;
+        return updated;
+      });
+      setProjects(nextProjects);
+      saveProjects(nextProjects);
       await refreshSessions();
       await selectSession(proj.id, s.id);
 
-      if (proj.path) {
+      if (directory) {
         setThinking(true);
         const primer =
-          `For this entire session, your working directory is \`${proj.path}\`.\n` +
-          `All file reads, writes, edits, and shell commands must use \`${proj.path}\` as the project root.\n` +
-          `Always cd into \`${proj.path}\` before running shell commands.`;
+          `For this entire session, your working directory is \`${directory}\`.\n` +
+          `All file reads, writes, edits, and shell commands must use \`${directory}\` as the project root.\n` +
+          `Always cd into \`${directory}\` before running shell commands.`;
         try {
-          const r = await oc.sendMessage(s.id, [{ type: 'text', text: primer }], null, true);
+          await oc.sendMessage(s.id, primer, { resume: false, model: selectedModel });
           setThinking(false);
           await loadMessages(s.id);
         } catch (e) {
@@ -821,12 +907,7 @@ async function handleCommitConfirm() {
     const modelOverride = model || selectedModel;
     try {
       const handlers = getMessageHandlers();
-      await oc.sendMessage(
-        curSessId,
-        [{ type: 'text', text }], modelOverride ? { providerID: modelOverride.provider, modelID: modelOverride.name } : null,
-        false,
-        handlers.onDelta, handlers.onPart, handlers.onMessage
-      );
+      await oc.sendMessage(curSessId, text, { model: modelOverride, handlers });
       setThinking(false);
       await loadMessages(curSessId);
     } catch (e) {
@@ -901,12 +982,15 @@ async function handleCommitConfirm() {
 
   async function refreshSession() {
     if (!curSessId) return;
-    await loadMessages(curSessId);
-    if (lastMsg.info.role === 'assistant' && lastMsg.info.finish != 'stop') {
+    const msgs = await loadMessages(curSessId);
+    const lastMsg = msgs[msgs.length - 1];
+    if (lastMsg?.info?.role === 'assistant' && lastMsg.info.finish == null
+      && await oc.isSessionRunning(curSessId)) {
       const handlers = getMessageHandlers();
       setThinking(true);
-      await oc.subscribeToSession(handlers.onDelta, handlers.onPart, handlers.onMessage);
+      await oc.subscribeToSession(curSessId, handlers);
       setThinking(false);
+      await loadMessages(curSessId);
     }
   }
 
@@ -1092,6 +1176,7 @@ async function handleCommitConfirm() {
         onClose={() => setNewProjOpen(false)}
         onDone={addProject}
         toast={toast}
+        workspace={workspace}
       />
 
       <ModelPickerModal
@@ -1101,7 +1186,7 @@ async function handleCommitConfirm() {
         onSelect={model => {
           setModelPickerOpen(false);
           setSelectedModel(model);
-          toast('Model set to ' + model.provider + '/' + model.name);
+          toast('Model set to ' + model.provider + '/' + (model.label ?? model.name));
         }}
       />
 

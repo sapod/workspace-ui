@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { parseArgs } from 'util';
 import { execSync } from 'child_process';
 
@@ -25,7 +26,7 @@ const { values } = parseArgs({
 const WORKSPACE = values.workdir || process.env.WORKDIR || process.cwd();
 
 app.get('/path', (req, res) => {
-  res.json({ path: WORKSPACE, cwd: WORKSPACE });
+  res.json({ path: WORKSPACE, cwd: WORKSPACE, home: homedir() });
 });
 
 app.get('/files', (req, res) => {

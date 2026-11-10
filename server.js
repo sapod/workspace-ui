@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { readdirSync, statSync, readFileSync } from 'fs';
+import fs from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { parseArgs } from 'util';
@@ -47,7 +48,27 @@ app.get('/files', (req, res) => {
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+app.get('/file', async (req, res) => {
+  let p = req.query.path || WORKSPACE;
+  try {
+    const content = await fs.readFile(p, 'utf8');
+    res.json({ content });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/file', async (req, res) => {
+  let p = req.body.path || WORKSPACE;
+  try {
+    await fs.writeFile(p, req.body.content, 'utf8');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 function gitStatus(p, res) {
   if (!p || p === WORKSPACE) {

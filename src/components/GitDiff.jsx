@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useState } from "react";
 
 // ── Core diff renderer ────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ function buildRaw(oldLines, newLines, lcs) {
   return raw;
 }
 
-function computeRawDiff(oldString, newString) {
+export function computeRawDiff(oldString, newString) {
   const unescape = s => s.replace(/\\n/g, "\n");
   const oldLines = unescape(oldString).split("\n");
   const newLines = unescape(newString).split("\n");
@@ -139,10 +140,20 @@ function ExpandButton({ label, onClick }) {
   );
 }
 
-function HunkHeader({ oldStart, oldCount, newStart, newCount }) {
+function HunkHeader({ oldStart, oldCount, newStart, newCount, openInEditor }) {
   return (
-    <div className="hunk-header">
-      @@ -{oldStart},{oldCount} +{newStart},{newCount} @@
+    <div className="hunk-header" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span>@@ -{oldStart},{oldCount} +{newStart},{newCount} @@</span>
+      {openInEditor && (
+        <button
+          className="diff-action-btn"
+          onClick={openInEditor}
+          title="Edit"
+          style={{ padding: '2px 8px', fontSize: 11, marginLeft: 'auto', marginRight: 8 }}
+        >
+          <i className="fa-regular fa-pen-to-square"></i>
+        </button>
+      )}
     </div>
   );
 }
@@ -163,7 +174,7 @@ function DiffLine({ line }) {
   );
 }
 
-export function GitDiff({ filePath, oldString, newString, isImage }) {
+export function GitDiff({ filePath, oldString, newString, isImage, openEditor }) {
   const [raw] = useState(() => isImage ? [] : computeRawDiff(oldString, newString));
   const [ranges, setRanges] = useState(() => isImage ? [] : computeInitialRanges(raw));
 
@@ -238,7 +249,7 @@ export function GitDiff({ filePath, oldString, newString, isImage }) {
             const canExpandDown = range.end < raw.length - 1;
             return (
               <div key={hi}>
-                <HunkHeader oldStart={firstOld} oldCount={oldCount} newStart={firstNew} newCount={newCount} />
+                <HunkHeader oldStart={firstOld} oldCount={oldCount} newStart={firstNew} newCount={newCount} openInEditor={openEditor ? openEditor.bind(null, filePath) : undefined} />
                 {canExpandUp && (
                   <ExpandButton label="↑ Show more" onClick={() => expandHunk(hi, "up")} />
                 )}

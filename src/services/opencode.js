@@ -472,11 +472,15 @@ class OpencodeService {
   }
 
   async getPath() {
-    return request('/path');
+    const res = await fetch('/path');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   }
 
   async listFiles(path) {
-    return request(`/files?path=${encodeURIComponent(path || '')}`);
+    const res = await fetch(`/files?path=${encodeURIComponent(path || '')}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   }
 
   async listModels() {

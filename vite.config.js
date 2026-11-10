@@ -43,6 +43,10 @@ export default defineConfig(({ mode }) => {
           target: 'http://localhost:4097',
           changeOrigin: true,
         },
+        '/file': {
+          target: 'http://localhost:4097',
+          changeOrigin: true,
+        },
         '/git': {
           target: 'http://localhost:4097',
           changeOrigin: true,

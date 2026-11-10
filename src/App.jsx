@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import oc from './services/opencode';
 import { git } from './services/git';
-import { GitDiff } from './components/GitDiff';
+import { GitDiff, computeRawDiff } from './components/GitDiff';
+import { FileEditor } from './components/FileEditor';
 import './App.css';
 
 const STORE = 'oc_projects_v1';
@@ -583,6 +584,7 @@ function App() {
   const [selectedModel, setSelectedModel] = useState({ provider: 'opencode', name: 'big-pickle' });
   const [workspace, setWorkspace] = useState({ root: '', home: '' });
   const [diffView, setDiffView] = useState({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
+  const [fileEditor, setFileEditor] = useState({ active: false, filePath: null, fileContent: null, raw: null });
   const [commitMsgOpen, setCommitMsgOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState('');
   const [commitListOpen, setCommitListOpen] = useState(false);
@@ -846,6 +848,45 @@ function App() {
     setDiffView({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
   }
 
+  async function openInEditor(filePath) {
+    try {
+      const res = await fetch(`/file?path=${encodeURIComponent(diffView.projectPath + '/' + filePath)}`);
+      const { content } = await res.json();
+
+      const diff = await git.getGitDiff(diffView.projectPath, filePath);
+
+      const raw = diff?.oldContent && diff?.newContent
+        ? computeRawDiff(diff.oldContent, diff.newContent)
+        : null;
+
+      setFileEditor({
+        active: true,
+        filePath: diffView.projectPath + '/' + filePath,
+        fileContent: content,
+        raw
+      });
+    } catch (e) {
+      console.log(e.message)
+      toast('Could not open file: ' + e.message);
+    }
+  }
+
+  async function saveFile(filePath, content) {
+    await fetch('/file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, content })
+    });
+    toast('Saved');
+    setFileEditor({ active: false, filePath: null, fileContent: null, raw: null });
+    if (diffView.active) {
+      await refreshGitStatus();
+      if (diffView.selectedFile?.path) {
+        await loadGitDiff(diffView.selectedFile.path);
+      }
+    }
+  }
+
   function toggleFileCheckbox(filePath) {
     setDiffView(prev => {
       const sel = prev.selectedFiles || [];
@@ -1103,7 +1144,15 @@ async function handleCommitConfirm() {
           }
         </div>
 
-        {diffView.active ? (
+        {fileEditor.active ? (
+          <FileEditor
+            filePath={fileEditor.filePath}
+            fileContent={fileEditor.fileContent}
+            raw={fileEditor.raw}
+            onSave={saveFile}
+            onClose={() => setFileEditor({ active: false, filePath: null, fileContent: null, raw: null })}
+          />
+        ) : diffView.active ? (
           <div className="diff-viewer">
             <div className="diff-header">
               <button className="back-btn" onClick={diffView.selectedFile ? goBackToFileList : closeDiffView}>
@@ -1151,6 +1200,7 @@ async function handleCommitConfirm() {
                     oldString={diffView.selectedFile.oldContent || ''}
                     newString={diffView.selectedFile.newContent || ''}
                     isImage={diffView.selectedFile.isImage || false}
+                    openEditor={openInEditor}
                   />
                 )}
               </div>

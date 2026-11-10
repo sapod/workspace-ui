@@ -3,6 +3,7 @@ import oc from './services/opencode';
 import { git } from './services/git';
 import { GitDiff, computeRawDiff } from './components/GitDiff';
 import { FileEditor } from './components/FileEditor';
+import { fetchJsonAbsolute, postJsonAbsolute } from './common/utils';
 import './App.css';
 
 const STORE = 'oc_projects_v1';
@@ -596,6 +597,37 @@ function App() {
   const [modelLoading, setModelLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [preview, setPreview] = useState({ open: false, port: '', url: '' });
+  const SCRIPTS_RECENT_STORE = 'oc_recent_scripts_v1';
+  const [scriptsMenuOpen, setScriptsMenuOpen] = useState(false);
+  const [projectScripts, setProjectScripts] = useState([]);
+  const [scriptsLoading, setScriptsLoading] = useState(false);
+  const [scriptsError, setScriptsError] = useState('');
+  const [scriptFailureModal, setScriptFailureModal] = useState(null);
+  const [scriptPending, setScriptPending] = useState({});
+  const scriptsMenuRef = useRef(null);
+  const scriptsSessionStartRef = useRef(Date.now());
+  const scriptsReqIdRef = useRef(0);
+
+  function loadRecentScriptsMap() {
+    try { return JSON.parse(localStorage.getItem(SCRIPTS_RECENT_STORE) || '{}'); } catch { return {}; }
+  }
+  function saveRecentScriptsMap(map) {
+    try { localStorage.setItem(SCRIPTS_RECENT_STORE, JSON.stringify(map)); } catch {}
+  }
+  function getRecentScriptNames(projPath) {
+    if (!projPath) return [];
+    const map = loadRecentScriptsMap();
+    const arr = Array.isArray(map[projPath]) ? map[projPath] : [];
+    return arr.filter(n => typeof n === 'string');
+  }
+  function markScriptUsed(projPath, name) {
+    if (!projPath || !name) return;
+    const map = loadRecentScriptsMap();
+    const prev = Array.isArray(map[projPath]) ? map[projPath] : [];
+    const next = [name, ...prev.filter(n => n !== name)].slice(0, 10);
+    map[projPath] = next;
+    saveRecentScriptsMap(map);
+  }
 
   function getMessageHandlers() {
     return {
@@ -1144,6 +1176,116 @@ async function handleCommitConfirm() {
     openPreviewForPort(port, { saveForProject: true, open: true });
   }
 
+  function normalizeProjectScripts(res) {
+    const sessionStart = scriptsSessionStartRef.current;
+    return (Array.isArray(res?.scripts) ? res.scripts : []).map(s => {
+      const lr = s?.lastRun;
+      if (!lr || !lr.finishedAt || lr.finishedAt < sessionStart) {
+        const { lastRun, ...rest } = s || {};
+        return rest;
+      }
+      return s;
+    });
+  }
+
+  async function fetchProjectScripts(projPath = curProj?.path) {
+    if (!projPath) return [];
+    const res = await fetchJsonAbsolute(`/scripts?path=${encodeURIComponent(projPath)}`);
+    if (res?.error) throw new Error(res.error);
+    return normalizeProjectScripts(res);
+  }
+
+  async function loadProjectScripts(projPath = curProj?.path, { silent = false } = {}) {
+    if (!projPath) return [];
+    const reqId = ++scriptsReqIdRef.current;
+    if (!silent) {
+      setScriptsLoading(true);
+      setScriptsError('');
+    }
+    try {
+      const scripts = await fetchProjectScripts(projPath);
+      if (reqId !== scriptsReqIdRef.current) return [];
+      setProjectScripts(scripts);
+      return scripts;
+    } catch (e) {
+      if (reqId !== scriptsReqIdRef.current) return [];
+      if (!silent) {
+        setScriptsError(e.message || 'Failed to load scripts');
+        setProjectScripts([]);
+      }
+      return [];
+    } finally {
+      if (reqId === scriptsReqIdRef.current && !silent) setScriptsLoading(false);
+    }
+  }
+
+  async function toggleScriptsMenu() {
+    if (!curProj?.path) return;
+    const next = !scriptsMenuOpen;
+    setScriptsMenuOpen(next);
+    if (next) await loadProjectScripts(curProj.path);
+  }
+
+  function setScriptPendingState(name, state) {
+    setScriptPending(prev => {
+      const next = { ...prev };
+      if (!state) delete next[name];
+      else next[name] = state;
+      return next;
+    });
+  }
+
+  async function waitForScriptState(projPath, name, predicate, timeoutMs = 15000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const scripts = await loadProjectScripts(projPath, { silent: true });
+      const s = scripts.find(x => x.name === name);
+      if (s && predicate(s)) return s;
+      await new Promise(r => setTimeout(r, 400));
+    }
+    const scripts = await loadProjectScripts(projPath);
+    return scripts.find(x => x.name === name) || null;
+  }
+
+  async function startProjectScript(name) {
+    const projPath = curProj?.path;
+    if (!projPath) return;
+    if (scriptPending[name]) return;
+    setScriptPendingState(name, 'starting');
+    try {
+      const res = await postJsonAbsolute('/scripts/start', { path: projPath, name });
+      if (res?.error) throw new Error(res.error);
+      markScriptUsed(projPath, name);
+      await waitForScriptState(
+        projPath,
+        name,
+        s => !!s.running || (s.lastRun?.status === 'failed' && (s.lastRun.finishedAt || 0) >= scriptsSessionStartRef.current),
+      );
+    } catch (e) {
+      toast(e.message || 'Failed to start script');
+    } finally {
+      setScriptPendingState(name, null);
+      await loadProjectScripts(projPath);
+    }
+  }
+
+  async function stopProjectScript(name) {
+    const projPath = curProj?.path;
+    if (!projPath) return;
+    if (scriptPending[name]) return;
+    setScriptPendingState(name, 'stopping');
+    try {
+      const res = await postJsonAbsolute('/scripts/stop', { path: projPath, name });
+      if (res?.error) throw new Error(res.error);
+      await waitForScriptState(projPath, name, s => !s.running);
+    } catch (e) {
+      toast(e.message || 'Failed to stop script');
+    } finally {
+      setScriptPendingState(name, null);
+      await loadProjectScripts(projPath);
+    }
+  }
+
   async function toggleExpand(id) {
     const wasExpanded = expandedIds.has(id);
     setExpandedIds(prev => {
@@ -1156,16 +1298,58 @@ async function handleCommitConfirm() {
 
   useEffect(() => {
     function onKey(e) {
-      if (e.key === 'Escape') { setNewProjOpen(false); setDrawerOpen(false); }
+      if (e.key === 'Escape') { setNewProjOpen(false); setDrawerOpen(false); setScriptsMenuOpen(false); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'n') { e.preventDefault(); setNewProjOpen(true); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  useEffect(() => {
+    if (!scriptsMenuOpen) return;
+    function onDocClick(e) {
+      if (scriptsMenuRef.current && !scriptsMenuRef.current.contains(e.target)) {
+        setScriptsMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [scriptsMenuOpen]);
+
+  useEffect(() => {
+    setScriptsMenuOpen(false);
+    setProjectScripts([]);
+    setScriptsError('');
+    setScriptFailureModal(null);
+    setScriptPending({});
+  }, [curProjId]);
+
   const curProj = projects.find(p => p.id === curProjId);
   const curSess = ocSessions.find(s => s.id === curSessId);
   const sessName = curSess?.title ?? (curSessId ? curSessId.slice(0, 10) + '…' : null);
+
+  useEffect(() => {
+    if (!curProj?.path) return;
+    setScriptPending({});
+    loadProjectScripts(curProj.path);
+  }, [curProj?.path]);
+
+  useEffect(() => {
+    if (!projects || projects.length === 0) return;
+    const paths = [...new Set(projects.map(p => p?.path).filter(Boolean))];
+    if (paths.length === 0) return;
+    postJsonAbsolute('/scripts/cleanup', { paths }).catch(() => {});
+    // Run once on mount/reload for projects in this page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!scriptsMenuOpen || !curProj?.path) return;
+    const id = setInterval(() => {
+      loadProjectScripts(curProj.path);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [scriptsMenuOpen, curProj?.path]);
 
   return (
     <>
@@ -1263,6 +1447,77 @@ async function handleCommitConfirm() {
                 <div className="tb-name">{curProj?.name ?? 'opencode'}</div>
                 <div className="tb-sub">{sessName ?? (curProj ? 'no session selected' : 'no project selected')}</div>
               </div>
+              {curProj?.path && !thinking && (
+                <div className="tb-scripts" ref={scriptsMenuRef}>
+                  <button
+                    className="tb-play"
+                    onClick={toggleScriptsMenu}
+                    title="Run package.json scripts"
+                    aria-label="Run package.json scripts"
+                  >▶</button>
+                  {scriptsMenuOpen && (
+                    <div className="scripts-menu">
+                      <div className="scripts-menu-hd">Scripts</div>
+                      {scriptsLoading && projectScripts.length === 0 ? (
+                        <div className="scripts-menu-empty">Loading…</div>
+                      ) : scriptsError ? (
+                        <div className="scripts-menu-empty scripts-menu-error">{scriptsError}</div>
+                      ) : projectScripts.length === 0 ? (
+                        <div className="scripts-menu-empty">No scripts found</div>
+                      ) : (() => {
+                        const byName = new Map(projectScripts.map(s => [s.name, s]));
+                        const recentNames = getRecentScriptNames(curProj?.path)
+                          .filter(n => byName.has(n))
+                          .slice(0, 3);
+                        const recent = recentNames.map(n => byName.get(n)).filter(Boolean);
+                        const recentSet = new Set(recentNames);
+                        const alphabetical = [...projectScripts]
+                          .filter(s => !recentSet.has(s.name))
+                          .sort((a, b) => a.name.localeCompare(b.name));
+                        const renderRow = (s, keyPrefix = '') => {
+                          const pending = scriptPending[s.name];
+                          const showStop = s.running || pending === 'stopping';
+                          return (
+                            <div key={`${keyPrefix}${s.name}`} className="scripts-menu-row">
+                              <span className="scripts-menu-name" title={s.command}>{s.name}</span>
+                              <div className="scripts-menu-actions">
+                                {s.lastRun?.status === 'success' && !s.running && !pending && <span className="script-last-status success" title="Last run succeeded">✓</span>}
+                                {s.lastRun?.status === 'failed' && !s.running && !pending && (
+                                  <button
+                                    className="script-last-status failed"
+                                    onClick={() => setScriptFailureModal({ name: s.name, ...s.lastRun, output: s.lastRun.output || s.lastRun.error || '' })}
+                                    title="Last run failed (click for details)"
+                                    aria-label={`${s.name} last run failed`}
+                                  >✕</button>
+                                )}
+                                <button
+                                  className={`scripts-run-btn ${showStop ? 'stop' : 'start'}`}
+                                  disabled={!!pending}
+                                  onClick={() => showStop ? stopProjectScript(s.name) : startProjectScript(s.name)}
+                                  title={pending === 'starting' ? `Starting ${s.name}` : pending === 'stopping' ? `Stopping ${s.name}` : showStop ? `Stop ${s.name}` : `Run ${s.name}`}
+                                  aria-label={pending ? `${pending} ${s.name}` : showStop ? `Stop ${s.name}` : `Run ${s.name}`}
+                                >{pending ? <span className="spin scripts-btn-spin" /> : showStop ? '■' : '▶'}</button>
+                              </div>
+                            </div>
+                          );
+                        };
+                        return (
+                          <>
+                            {recent.length > 0 && (
+                              <>
+                                <div className="scripts-menu-subhd">Recent</div>
+                                {recent.map(s => renderRow(s, 'recent-'))}
+                                <div className="scripts-menu-subhd">A–Z</div>
+                              </>
+                            )}
+                            {alphabetical.map(s => renderRow(s, 'az-'))}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
               {thinking ? (
                 <>
                   <span className="tb-status thinking">● thinking</span>
@@ -1425,6 +1680,27 @@ async function handleCommitConfirm() {
             </div>
             <div className="mfoot">
               <button className="btn-cancel" onClick={() => setCommitListOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scriptFailureModal && (
+        <div className="overlay open" onClick={e => e.target === e.currentTarget && setScriptFailureModal(null)}>
+          <div className="mbox">
+            <div className="mhdr">
+              <span className="m-title">Script failed: {scriptFailureModal.name}</span>
+              <button className="m-x" onClick={() => setScriptFailureModal(null)}>✕</button>
+            </div>
+            <div className="mbody">
+              <div className="script-failure-meta">
+                {scriptFailureModal.code != null ? `Exit code: ${scriptFailureModal.code}` : ''}
+                {scriptFailureModal.signal ? ` (signal ${scriptFailureModal.signal})` : ''}
+              </div>
+              <pre className="script-failure-output">{scriptFailureModal.output || scriptFailureModal.error || 'No error output captured.'}</pre>
+            </div>
+            <div className="mfoot">
+              <button className="btn-ok" onClick={() => setScriptFailureModal(null)}>Close</button>
             </div>
           </div>
         </div>

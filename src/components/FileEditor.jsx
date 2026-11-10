@@ -53,9 +53,19 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
   const taRefs = useRef({}); // segIdx -> textarea el
   const gutterRef = useRef(null);
   const initialRef = useRef(null);
+  const prevTextRef = useRef({});
   const [rowH] = useState(() => measureRowHeight());
   const [saved, setSaved] = useState(false);
-  const [structureChanged, setStructureChanged] = useState(false);
+  const [markers, setMarkers] = useState(() => {
+    const m = {};
+    segments.forEach((seg, si) => {
+      if (seg.kind === 'real') {
+        m[si] = seg.raws.map(r => r.type === 'added' ? 'added' : 'context');
+        prevTextRef.current[si] = seg.raws.map(r => r.text).join('\n');
+      }
+    });
+    return m;
+  });
 
   if (initialRef.current === null) {
     initialRef.current = segments
@@ -78,11 +88,12 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
       } else {
         const ta = taRefs.current[si];
         const lineCount = ta ? ta.value.split('\n').length : seg.raws.length;
+        const segMarkers = markers[si] || [];
         for (let i = 0; i < lineCount; i++) {
           const orig = seg.raws[i];
           gutterRef.current.appendChild(makeGutterRow(
             orig?.oldLine ?? '', orig?.newLine ?? '',
-            (!structureChanged && orig?.type === 'added') ? 'added' : 'context',
+            segMarkers[i] === 'added' ? 'added' : 'context',
             rowH
           ));
         }
@@ -174,32 +185,63 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
             }
             return (
               <div key={si} style={{ position: 'relative', flexShrink: 0 }}>
-                {!structureChanged && (
                 <div
                   aria-hidden="true"
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none', zIndex: 0 }}
                 >
-                  {seg.raws.map((r, i) => (
+                  {(markers[si] || []).map((m, i) => (
                     <div
                       key={i}
                       style={{
                         height: rowH,
-                        background: r.type === 'added' ? 'rgba(63,185,80,0.18)' : 'transparent',
+                        background: m === 'added' ? 'rgba(63,185,80,0.18)' : 'transparent',
                         boxSizing: 'border-box',
                       }}
                     />
                   ))}
                 </div>
-                )}
                 <textarea
                   ref={el => { if (el) taRefs.current[si] = el; }}
                   rows={seg.raws.length}
                   spellCheck={false}
                   defaultValue={seg.raws.map(r => r.text).join('\n')}
                   onChange={e => {
-                    const newCount = e.target.value.split('\n').length;
-                    e.target.rows = newCount;
-                    setStructureChanged(prev => prev || newCount !== seg.raws.length);
+                    const newVal = e.target.value;
+                    const newLines = newVal.split('\n');
+                    e.target.rows = newLines.length;
+
+                    const oldVal = prevTextRef.current[si] ?? '';
+                    const oldLines = oldVal.split('\n');
+                    if (newLines.length !== oldLines.length) {
+                      let nextMarkers = null;
+                      if (newLines.length === oldLines.length + 1) {
+                        let i = 0;
+                        while (i < oldLines.length && oldLines[i] === newLines[i]) i++;
+                        let j = oldLines.length - 1, k = newLines.length - 1;
+                        while (j >= i && oldLines[j] === newLines[k]) { j--; k--; }
+                        if (i === k) {
+                          const cur = (markers[si] || []).slice();
+                          cur.splice(i, 0, 'added');
+                          nextMarkers = cur;
+                        }
+                      } else if (newLines.length === oldLines.length - 1) {
+                        let i = 0;
+                        while (i < newLines.length && oldLines[i] === newLines[i]) i++;
+                        let j = oldLines.length - 1, k = newLines.length - 1;
+                        while (k >= i && oldLines[j] === newLines[k]) { j--; k--; }
+                        if (i === j) {
+                          const cur = (markers[si] || []).slice();
+                          cur.splice(i, 1);
+                          nextMarkers = cur;
+                        }
+                      }
+                      if (nextMarkers) {
+                        setMarkers(prev => ({ ...prev, [si]: nextMarkers }));
+                      } else {
+                        setMarkers(prev => ({ ...prev, [si]: newLines.map(() => 'context') }));
+                      }
+                    }
+                    prevTextRef.current[si] = newVal;
                     rebuildGutter();
                   }}
                   style={{

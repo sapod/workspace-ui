@@ -705,6 +705,9 @@ function App() {
       } catch { /* workspace info is best-effort */ }
 
       const openSession = loadOpenSession();
+      if (openSession?.projectId) {
+        setExpandedIds(prev => new Set([...prev, openSession.projectId]));
+      }
       setCurProjId(openSession?.projectId ?? null);
       setCurSessId(openSession?.sessionId ?? null);
 
@@ -746,7 +749,7 @@ function App() {
   useEffect(() => {
     if (!bootDone) return;
     saveOpenSession(curProjId, curSessId);
-  }, [curProjId, curSessId]);
+  }, [curProjId, curSessId, bootDone]);
 
   useEffect(() => {
     if (!curProjId) {

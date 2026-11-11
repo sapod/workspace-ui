@@ -596,7 +596,7 @@ function App() {
   const [bootDone, setBootDone] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
-  const [preview, setPreview] = useState({ open: false, port: '', url: '' });
+  const [preview, setPreview] = useState({ open: false, port: '', url: '', nonce: 0 });
   const SCRIPTS_RECENT_STORE = 'oc_recent_scripts_v1';
   const [scriptsMenuOpen, setScriptsMenuOpen] = useState(false);
   const [projectScripts, setProjectScripts] = useState([]);
@@ -746,15 +746,15 @@ function App() {
 
   useEffect(() => {
     if (!curProjId) {
-      setPreview({ open: false, port: '', url: '' });
+      setPreview({ open: false, port: '', url: '', nonce: 0 });
       return;
     }
     const port = getProjectPreviewPort(curProjId);
     if (port && /^\d+$/.test(port)) {
       const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
-      setPreview({ open: getProjectPreviewOpen(curProjId), port, url });
+      setPreview({ open: getProjectPreviewOpen(curProjId), port, url, nonce: 0 });
     } else {
-      setPreview({ open: false, port: '', url: '' });
+      setPreview({ open: false, port: '', url: '', nonce: 0 });
     }
   }, [curProjId, projects]);
 
@@ -1157,7 +1157,7 @@ async function handleCommitConfirm() {
       return;
     }
     const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
-    setPreview({ open, port, url });
+    setPreview({ open, port, url, nonce: open ? Date.now() : 0 });
     if (saveForProject && curProjId) saveProjectPreviewState(curProjId, { port, open });
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   }
@@ -1434,7 +1434,7 @@ async function handleCommitConfirm() {
               }}>Port</button>
               <button className="diff-action-btn" onClick={() => window.open(preview.url, '_blank', 'noopener,noreferrer')} title="Open in new tab">↗</button>
             </div>
-            <iframe className="preview-frame" src={preview.url} title="App preview" />
+            <iframe key={preview.nonce} className="preview-frame" src={preview.url} title="App preview" />
           </div>
         )}
         {!preview.open && (

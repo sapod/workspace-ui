@@ -251,8 +251,7 @@ function SlashMenu({ query, selIdx, onSelect }) {
   );
 }
 
-function MessageInput({ onSend, disabled, selectedModel, modelLoading }) {
-  const [text, setText] = useState('');
+function MessageInput({ value = '', onValueChange, onSend, disabled, selectedModel, modelLoading }) {
   const [focused, setFocused] = useState(false);
   const [hist, setHist] = useState([]);
   const [histIdx, setHistIdx] = useState(-1);
@@ -260,11 +259,15 @@ function MessageInput({ onSend, disabled, selectedModel, modelLoading }) {
   const [slashSel, setSlashSel] = useState(0);
   const ta = useRef();
 
+  function setText(v) { onValueChange?.(v); }
+
   function resize() {
     if (!ta.current) return;
     ta.current.style.height = 'auto';
     ta.current.style.height = Math.min(ta.current.scrollHeight, 150) + 'px';
   }
+
+  useEffect(() => { resize(); }, [value]);
 
   function onChange(e) {
     const v = e.target.value;
@@ -307,7 +310,7 @@ function MessageInput({ onSend, disabled, selectedModel, modelLoading }) {
   function doSelect(cmd) { setText(''); setSlashQ(''); onSend({ slash: cmd }); }
 
   function submit() {
-    const v = text.trim();
+    const v = value.trim();
     if (!v || disabled) return;
     if (v.startsWith('/')) {
       const w = v.split(' ')[0];
@@ -329,14 +332,14 @@ function MessageInput({ onSend, disabled, selectedModel, modelLoading }) {
         <div className={`inp-shell${focused ? ' focused' : ''}`}>
           <textarea ref={ta} className="msg-ta" rows={1}
             placeholder="Message opencode… (/ for commands)"
-            value={text} onChange={onChange} onKeyDown={onKey}
+            value={value} onChange={onChange} onKeyDown={onKey}
             onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
           <div className="inp-foot">
             <span className="inp-hint"><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> history</span>
             <span className={`inp-model${modelLoading ? ' inp-model-loading' : ''}`}>
               {modelLoading ? <span className="spin" /> : (selectedModel ? (selectedModel.label ?? selectedModel.name) : '')}
             </span>
-            <button className="send-btn" disabled={disabled || !text.trim()} onClick={submit}>Send ↵</button>
+            <button className="send-btn" disabled={disabled || !value.trim()} onClick={submit}>Send ↵</button>
           </div>
         </div>
       </div>
@@ -597,6 +600,7 @@ function App() {
   const [modelLoading, setModelLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [preview, setPreview] = useState({ open: false, port: '', url: '', nonce: 0 });
+  const [drafts, setDrafts] = useState({});
   const SCRIPTS_RECENT_STORE = 'oc_recent_scripts_v1';
   const [scriptsMenuOpen, setScriptsMenuOpen] = useState(false);
   const [projectScripts, setProjectScripts] = useState([]);
@@ -1603,6 +1607,8 @@ async function handleCommitConfirm() {
             )}
 
             <MessageInput
+              value={curSessId ? (drafts[curSessId] ?? '') : ''}
+              onValueChange={(v) => curSessId && setDrafts(p => ({ ...p, [curSessId]: v }))}
               onSend={handleSend}
               disabled={!curSessId || thinking || sessionLoading}
               selectedModel={sessionLoading ? null : selectedModel}

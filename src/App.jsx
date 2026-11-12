@@ -619,7 +619,12 @@ function App() {
   const [bootDone, setBootDone] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
-  const [preview, setPreview] = useState({ open: false, port: '', url: '', nonce: 0 });
+  const [preview, setPreview] = useState({ open: false, port: '', url: '', frameUrl: '', nonce: 0, useProxy: false });
+  const [previewConsoleOpen, setPreviewConsoleOpen] = useState(false);
+  const [previewLogs, setPreviewLogs] = useState([]);
+  const [previewConsoleStatus, setPreviewConsoleStatus] = useState('');
+  const previewIframeRef = useRef(null);
+  const previewConsoleCleanupRef = useRef(null);
   const [drafts, setDrafts] = useState({});
   const SCRIPTS_RECENT_STORE = 'oc_recent_scripts_v1';
   const [scriptsMenuOpen, setScriptsMenuOpen] = useState(false);
@@ -772,16 +777,21 @@ function App() {
   }, [curProjId, curSessId, bootDone]);
 
   useEffect(() => {
+    detachPreviewConsole();
+    setPreviewConsoleOpen(false);
+    setPreviewLogs([]);
+    setPreviewConsoleStatus('');
     if (!curProjId) {
-      setPreview({ open: false, port: '', url: '', nonce: 0 });
+      setPreview({ open: false, port: '', url: '', frameUrl: '', nonce: 0, useProxy: false });
       return;
     }
     const port = getProjectPreviewPort(curProjId);
     if (port && /^\d+$/.test(port)) {
       const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
-      setPreview({ open: getProjectPreviewOpen(curProjId), port, url, nonce: 0 });
+      const frameUrl = `/__preview_proxy__/${port}/`;
+      setPreview({ open: getProjectPreviewOpen(curProjId), port, url, frameUrl, nonce: 0, useProxy: getProjectPreviewProxy(curProjId) });
     } else {
-      setPreview({ open: false, port: '', url: '', nonce: 0 });
+      setPreview({ open: false, port: '', url: '', frameUrl: '', nonce: 0, useProxy: false });
     }
   }, [curProjId, projects]);
 
@@ -1179,29 +1189,141 @@ async function handleCommitConfirm() {
     return !!proj?.previewOpen;
   }
 
-  function saveProjectPreviewState(projId, { port, open } = {}) {
+  function getProjectPreviewProxy(projId) {
+    const proj = projects.find(p => p.id === projId);
+    return !!proj?.previewProxy;
+  }
+
+  function saveProjectPreviewState(projId, { port, open, useProxy } = {}) {
     if (!projId) return;
     const next = projects.map(p => {
       if (p.id !== projId) return p;
       const updated = { ...p };
       if (port !== undefined) updated.previewPort = port;
       if (open !== undefined) updated.previewOpen = open;
+      if (useProxy !== undefined) updated.previewProxy = useProxy;
       return updated;
     });
     setProjects(next);
     saveProjects(next);
   }
 
-  function openPreviewForPort(port, { saveForProject = false, open = true } = {}) {
+  function clearPreviewConsole() {
+    setPreviewLogs([]);
+  }
+
+  function appendPreviewLog(level, args) {
+    const formatArg = (a) => {
+      if (typeof a === 'string') return a;
+      if (a instanceof Error) return a.stack || a.message || String(a);
+      try { return JSON.stringify(a); } catch { return String(a); }
+    };
+    const text = (Array.isArray(args) ? args : [args]).map(formatArg).join(' ');
+    setPreviewLogs(prev => {
+      const next = [...prev, { id: Date.now() + Math.random(), level, text, ts: new Date().toLocaleTimeString() }];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
+  }
+
+  function detachPreviewConsole() {
+    if (previewConsoleCleanupRef.current) {
+      try { previewConsoleCleanupRef.current(); } catch {}
+      previewConsoleCleanupRef.current = null;
+    }
+  }
+
+  function attachPreviewConsole() {
+    detachPreviewConsole();
+    const iframe = previewIframeRef.current;
+    if (!iframe) return;
+    try {
+      const win = iframe.contentWindow;
+      const doc = iframe.contentDocument;
+      if (!win || !doc) throw new Error('unavailable');
+      // Access check for cross-origin
+      void win.location.href;
+      const originals = {};
+      ['log', 'info', 'warn', 'error', 'debug'].forEach(level => {
+        if (typeof win.console?.[level] !== 'function') return;
+        originals[level] = win.console[level].bind(win.console);
+        win.console[level] = (...args) => {
+          try { appendPreviewLog(level, args); } catch {}
+          try { originals[level](...args); } catch {}
+        };
+      });
+      const onError = (e) => appendPreviewLog('error', [e?.message || 'Error', e?.filename ? `(${e.filename}:${e.lineno}:${e.colno})` : '']);
+      const onRejection = (e) => appendPreviewLog('error', ['Unhandled rejection:', e?.reason]);
+      win.addEventListener('error', onError);
+      win.addEventListener('unhandledrejection', onRejection);
+      setPreviewConsoleStatus('');
+      previewConsoleCleanupRef.current = () => {
+        try {
+          Object.keys(originals).forEach(level => { if (win.console) win.console[level] = originals[level]; });
+          win.removeEventListener('error', onError);
+          win.removeEventListener('unhandledrejection', onRejection);
+        } catch {}
+      };
+    } catch {
+      if (preview.useProxy === false) {
+        setPreviewConsoleStatus('Enable Proxy to capture console.log() output (may affect app behavior).');
+      } else {
+        setPreviewConsoleStatus('Direct console capture unavailable. If the app posts { source: "workspace-preview-console", level, args } via window.parent.postMessage, logs will appear here.');
+      }
+    }
+  }
+
+  function handlePreviewFrameLoad() {
+    attachPreviewConsole();
+  }
+
+  useEffect(() => {
+    if (!preview.url) return;
+    function onMessage(e) {
+      const iframeWin = previewIframeRef.current?.contentWindow;
+      if (iframeWin && e.source !== iframeWin) return;
+      const d = e.data;
+      if (!d || typeof d !== 'object') return;
+      const isConsoleMsg = d.source === 'workspace-preview-console' || d.__preview_console__ || d.type === 'preview-console';
+      if (!isConsoleMsg) return;
+      const level = ['log', 'info', 'warn', 'error', 'debug'].includes(d.level) ? d.level : 'log';
+      const payload = d.args ?? d.message ?? d.text ?? d.data ?? '';
+      appendPreviewLog(level, Array.isArray(payload) ? payload : [payload]);
+      setPreviewConsoleStatus(s => s.startsWith('Direct console capture unavailable') ? '' : s);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [preview.url, preview.nonce]);
+
+  function openPreviewForPort(port, { saveForProject = false, open = true, useProxy } = {}) {
     if (!/^\d+$/.test(port)) {
       toast('Invalid port');
       return;
     }
     const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
-    setPreview({ open, port, url, nonce: open ? Date.now() : 0 });
-    if (saveForProject && curProjId) saveProjectPreviewState(curProjId, { port, open });
+    const frameUrl = `/__preview_proxy__/${port}/`;
+    const resolvedUseProxy = typeof useProxy === 'boolean'
+      ? useProxy
+      : (curProjId ? getProjectPreviewProxy(curProjId) : preview.useProxy ?? false);
+    detachPreviewConsole();
+    setPreviewLogs([]);
+    setPreviewConsoleStatus('');
+    setPreview({ open, port, url, frameUrl, nonce: open ? Date.now() : 0, useProxy: resolvedUseProxy });
+    if (saveForProject && curProjId) saveProjectPreviewState(curProjId, { port, open, useProxy: resolvedUseProxy });
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   }
+
+  function togglePreviewProxy() {
+    detachPreviewConsole();
+    setPreviewLogs([]);
+    setPreviewConsoleStatus('');
+    setPreview(p => {
+      const next = !p.useProxy;
+      if (curProjId) saveProjectPreviewState(curProjId, { useProxy: next });
+      return { ...p, useProxy: next, nonce: Date.now() };
+    });
+  }
+
+  useEffect(() => () => detachPreviewConsole(), []);
 
   function openPreview() {
     if (!curSessId || thinking) return;
@@ -1463,6 +1585,8 @@ async function handleCommitConfirm() {
           <div className="preview-viewer" style={{ display: preview.open ? 'flex' : 'none' }}>
             <div className="preview-header">
               <button className="back-btn" onClick={() => {
+                detachPreviewConsole();
+                setPreviewConsoleOpen(false);
                 setPreview(p => ({ ...p, open: false }));
                 saveProjectPreviewState(curProjId, { open: false });
               }}>✕</button>
@@ -1473,9 +1597,42 @@ async function handleCommitConfirm() {
                 if (!input) return;
                 openPreviewForPort(input.trim(), { saveForProject: true, open: true });
               }}>Port</button>
+              <button
+                className={`diff-action-btn${previewConsoleOpen ? ' active' : ''}`}
+                onClick={() => setPreviewConsoleOpen(o => !o)}
+                title="Console output"
+                aria-label="Console output"
+              >{'</>'}</button>
               <button className="diff-action-btn" onClick={() => window.open(preview.url, '_blank', 'noopener,noreferrer')} title="Open in new tab">↗</button>
             </div>
-            <iframe key={preview.nonce} className="preview-frame" src={preview.url} title="App preview" />
+            <div className="preview-body">
+              <iframe key={preview.nonce} ref={previewIframeRef} className="preview-frame" src={(preview.useProxy ? (preview.frameUrl || preview.url) : preview.url)} title="App preview" onLoad={handlePreviewFrameLoad} />
+              {previewConsoleOpen && (
+                <div className="preview-console">
+                  <div className="preview-console-hd">
+                    <span>Console</span>
+                    <div className="preview-console-actions">
+                      <button
+                        className={`diff-action-btn preview-proxy-toggle${preview.useProxy ? ' active' : ''}`}
+                        onClick={togglePreviewProxy}
+                        title={preview.useProxy ? 'Proxy on: same-origin preview for console capture (click to load directly)' : 'Proxy off: direct port/origin preview (click to enable proxy for console capture)'}
+                      >Proxy</button>
+                      <button className="diff-action-btn" onClick={clearPreviewConsole} title="Clear console">Clear</button>
+                    </div>
+                  </div>
+                  <div className="preview-console-body">
+                    {previewConsoleStatus && <div className="preview-console-status">{previewConsoleStatus}</div>}
+                    {previewLogs.length === 0 && !previewConsoleStatus && <div className="preview-console-empty">No console output yet.</div>}
+                    {previewLogs.map(log => (
+                      <div key={log.id} className={`preview-console-line level-${log.level}`}>
+                        <span className="preview-console-ts">{log.ts}</span>
+                        <span className="preview-console-msg">{log.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
         {!preview.open && (

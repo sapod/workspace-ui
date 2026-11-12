@@ -55,6 +55,11 @@ export default defineConfig(({ mode }) => {
           target: 'http://localhost:4097',
           changeOrigin: true,
         },
+        '/__preview_proxy__': {
+          target: 'http://localhost:4097',
+          changeOrigin: true,
+          ws: true,
+        },
       },
     },
   }

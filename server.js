@@ -6,6 +6,8 @@ import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { parseArgs } from 'util';
 import { execSync, spawn } from 'child_process';
+import http from 'http';
+import net from 'net';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'svg', 'webp']);
 
@@ -16,6 +18,38 @@ function isImageFile(file) {
 
 const app = express();
 app.use(cors());
+
+function getPreviewProxyTarget(reqUrl) {
+  const m = /^\/__preview_proxy__\/(\d+)(\/.*)?$/.exec(reqUrl || '');
+  if (!m) return null;
+  const port = Number(m[1]);
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) return null;
+  const rest = m[2] || '/';
+  return { port, path: rest };
+}
+
+app.use('/__preview_proxy__', (req, res) => {
+  const target = getPreviewProxyTarget(req.originalUrl || req.url);
+  if (!target) return res.status(400).send('Invalid preview proxy path');
+  const opts = {
+    hostname: '127.0.0.1',
+    port: target.port,
+    path: target.path,
+    method: req.method,
+    headers: { ...req.headers, host: `127.0.0.1:${target.port}` },
+  };
+  const proxyReq = http.request(opts, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+  proxyReq.on('error', (e) => {
+    if (!res.headersSent) res.status(502).send(`Preview proxy error: ${e.message}`);
+    else res.end();
+  });
+  req.on('aborted', () => proxyReq.destroy());
+  if (req.method === 'GET' || req.method === 'HEAD') proxyReq.end();
+  else req.pipe(proxyReq);
+});
 
 const { values } = parseArgs({
   options: {
@@ -505,6 +539,28 @@ app.all('/git/:action', (req, res) => {
   }
 });
 
-app.listen(4097, '0.0.0.0', () => {
+const server = app.listen(4097, '0.0.0.0', () => {
   console.log('Server on http://0.0.0.0:4097');
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const target = getPreviewProxyTarget(req.url || '');
+  if (!target) {
+    socket.destroy();
+    return;
+  }
+  const proxySocket = net.connect(target.port, '127.0.0.1', () => {
+    const headers = { ...req.headers, host: `127.0.0.1:${target.port}` };
+    let headerLines = `${req.method} ${target.path} HTTP/${req.httpVersion}\r\n`;
+    for (const [k, v] of Object.entries(headers)) {
+      if (Array.isArray(v)) v.forEach(val => { headerLines += `${k}: ${val}\r\n`; });
+      else if (v != null) headerLines += `${k}: ${v}\r\n`;
+    }
+    headerLines += '\r\n';
+    proxySocket.write(headerLines);
+    if (head && head.length) proxySocket.write(head);
+    socket.pipe(proxySocket).pipe(socket);
+  });
+  proxySocket.on('error', () => socket.destroy());
+  socket.on('error', () => proxySocket.destroy());
 });

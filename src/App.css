@@ -1850,6 +1850,12 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .preview-frame {
   flex: 1;
   width: 100%;
@@ -1857,4 +1863,81 @@ kbd {
   border: 0;
   background: #fff;
   display: block;
+}
+.preview-console {
+  height: 220px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.preview-console-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text2);
+  flex-shrink: 0;
+}
+.preview-console-actions {
+  display: flex;
+  gap: 6px;
+}
+.preview-console-actions .diff-action-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+}
+.preview-console-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.preview-console-empty, .preview-console-status {
+  color: var(--text3);
+  padding: 4px 2px;
+}
+.preview-console-status {
+  color: var(--yellow);
+  margin-bottom: 4px;
+}
+.preview-console-line {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.preview-console-ts {
+  color: var(--text3);
+  flex-shrink: 0;
+}
+.preview-console-line.level-warn .preview-console-msg { color: var(--yellow); }
+.preview-console-line.level-error .preview-console-msg { color: var(--red); }
+.preview-console-line.level-info .preview-console-msg,
+.preview-console-line.level-debug .preview-console-msg { color: var(--text2); }
+.diff-action-btn.active {
+  background: var(--bg4);
+  color: var(--text);
+  border-color: var(--border2);
+}
+.preview-proxy-toggle {
+  border-color: transparent;
+  color: var(--text);
+  background: transparent;
+}
+.preview-proxy-toggle.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: transparent;
 }

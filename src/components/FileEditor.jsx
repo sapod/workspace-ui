@@ -80,6 +80,49 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
     if (seg.kind === 'real') seg._idx = i;
   });
 
+  function syncContentWidths() {
+    const content = gutterRef.current?.nextElementSibling;
+    if (!content) return;
+    const containerW = content.parentElement?.clientWidth || 0;
+    let maxW = containerW;
+
+    segments.forEach((seg, si) => {
+      if (seg.kind === 'removed') {
+        const row = content.children[si];
+        if (row) {
+          row.style.width = 'max-content';
+          maxW = Math.max(maxW, row.scrollWidth);
+        }
+      } else {
+        const ta = taRefs.current[si];
+        if (ta) {
+          ta.style.width = '0px';
+          maxW = Math.max(maxW, ta.scrollWidth);
+        }
+      }
+    });
+
+    segments.forEach((seg, si) => {
+      if (seg.kind === 'removed') {
+        const row = content.children[si];
+        if (row) row.style.width = maxW + 'px';
+      } else {
+        const ta = taRefs.current[si];
+        if (!ta) return;
+        ta.style.width = maxW + 'px';
+        const wrapper = ta.parentElement;
+        if (wrapper) {
+          wrapper.style.width = maxW + 'px';
+          const overlay = wrapper.firstElementChild;
+          if (overlay) {
+            overlay.style.width = maxW + 'px';
+            overlay.style.right = 'auto';
+          }
+        }
+      }
+    });
+  }
+
   function rebuildGutter() {
     if (!gutterRef.current) return;
     gutterRef.current.innerHTML = '';
@@ -100,6 +143,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
         }
       }
     });
+    syncContentWidths();
   }
 
   function makeGutterRow(oldN, newN, kind, h) {
@@ -178,14 +222,14 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
               return (
                 <div
                   key={si}
-                  style={{ height: rowH, lineHeight: lineH + 'px', padding: '0 8px', background: '#3d1f1f', color: '#ffa09e', whiteSpace: 'pre', flexShrink: 0, fontFamily: FF, fontSize: FS, boxSizing: 'content-box' }}
+                  style={{ height: rowH, lineHeight: lineH + 'px', padding: '0 8px', background: '#3d1f1f', color: '#ffa09e', whiteSpace: 'pre', flexShrink: 0, fontFamily: FF, fontSize: FS, boxSizing: 'content-box', minWidth: '100%', width: 'max-content' }}
                 >
                   {seg.text}
                 </div>
               );
             }
             return (
-              <div key={si} style={{ position: 'relative', flexShrink: 0 }}>
+              <div key={si} style={{ position: 'relative', flexShrink: 0, minWidth: '100%' }}>
                 <div
                   aria-hidden="true"
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none', zIndex: 0 }}
@@ -195,6 +239,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
                       key={i}
                       style={{
                         height: lineH,
+                        width: '100%',
                         background: m === 'added' ? 'rgba(63,185,80,0.18)' : 'transparent',
                         boxSizing: 'border-box',
                       }}
@@ -248,7 +293,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
                   style={{
                     position: 'relative', zIndex: 1,
                     fontFamily: FF, fontSize: FS, lineHeight: lineH + 'px',
-                    display: 'block', width: '100%',
+                    display: 'block', minWidth: '100%',
                     border: 'none', outline: 'none', resize: 'none', overflow: 'hidden',
                     whiteSpace: 'pre', padding: '0 8px', margin: 0,
                     background: 'transparent', color: '#c9d1d9', caretColor: '#c9d1d9',

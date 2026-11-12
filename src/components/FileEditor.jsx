@@ -41,7 +41,7 @@ function measureRowHeight() {
   const ta = document.createElement('textarea');
   ta.rows = 1;
   ta.value = 'X';
-  ta.style.cssText = `font-family:${FF};font-size:${FS};position:fixed;visibility:hidden;top:0;left:0;resize:none;border:none;padding:0;margin:0;`;
+  ta.style.cssText = `font-family:${FF};font-size:${FS};line-height:1.5;position:fixed;visibility:hidden;top:0;left:0;resize:none;border:none;padding:0;margin:0;box-sizing:content-box;overflow:hidden;`;
   document.body.appendChild(ta);
   const h = ta.offsetHeight;
   document.body.removeChild(ta);
@@ -55,6 +55,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
   const initialRef = useRef(null);
   const prevTextRef = useRef({});
   const [rowH] = useState(() => measureRowHeight());
+  const lineH = rowH; // explicit line-height in px to keep gutter/markers/content aligned
   const [saved, setSaved] = useState(false);
   const [markers, setMarkers] = useState(() => {
     const m = {};
@@ -84,7 +85,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
     gutterRef.current.innerHTML = '';
     segments.forEach((seg, si) => {
       if (seg.kind === 'removed') {
-        gutterRef.current.appendChild(makeGutterRow(seg.raw.oldLine, '', 'removed', rowH));
+        gutterRef.current.appendChild(makeGutterRow(seg.raw.oldLine, '', 'removed', lineH));
       } else {
         const ta = taRefs.current[si];
         const lineCount = ta ? ta.value.split('\n').length : seg.raws.length;
@@ -94,7 +95,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
           gutterRef.current.appendChild(makeGutterRow(
             orig?.oldLine ?? '', orig?.newLine ?? '',
             segMarkers[i] === 'added' ? 'added' : 'context',
-            rowH
+            lineH
           ));
         }
       }
@@ -103,7 +104,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
 
   function makeGutterRow(oldN, newN, kind, h) {
     const row = document.createElement('div');
-    row.style.cssText = `display:flex;align-items:center;height:${h}px;flex-shrink:0`;
+    row.style.cssText = `display:flex;align-items:center;height:${h}px;flex-shrink:0;box-sizing:border-box`;
     const lnO = document.createElement('span');
     lnO.style.cssText = `min-width:36px;padding:0 6px;text-align:right;color:#484f58;font-size:12px;line-height:${h}px;font-family:monospace`;
     lnO.textContent = oldN ?? '';
@@ -177,7 +178,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
               return (
                 <div
                   key={si}
-                  style={{ height: rowH, lineHeight: rowH + 'px', padding: '0 8px', background: '#3d1f1f', color: '#ffa09e', whiteSpace: 'pre', flexShrink: 0, fontFamily: FF, fontSize: FS }}
+                  style={{ height: rowH, lineHeight: lineH + 'px', padding: '0 8px', background: '#3d1f1f', color: '#ffa09e', whiteSpace: 'pre', flexShrink: 0, fontFamily: FF, fontSize: FS, boxSizing: 'content-box' }}
                 >
                   {seg.text}
                 </div>
@@ -193,7 +194,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
                     <div
                       key={i}
                       style={{
-                        height: rowH,
+                        height: lineH,
                         background: m === 'added' ? 'rgba(63,185,80,0.18)' : 'transparent',
                         boxSizing: 'border-box',
                       }}
@@ -246,7 +247,7 @@ export function FileEditor({ filePath, fileContent, raw, onSave, onClose }) {
                   }}
                   style={{
                     position: 'relative', zIndex: 1,
-                    fontFamily: FF, fontSize: FS,
+                    fontFamily: FF, fontSize: FS, lineHeight: lineH + 'px',
                     display: 'block', width: '100%',
                     border: 'none', outline: 'none', resize: 'none', overflow: 'hidden',
                     whiteSpace: 'pre', padding: '0 8px', margin: 0,

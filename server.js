@@ -1,8 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import { readdirSync, statSync, readFileSync } from 'fs';
+import { readdirSync, statSync, readFileSync, realpathSync } from 'fs';
 import fs from 'fs/promises';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { parseArgs } from 'util';
 import { execSync, spawn } from 'child_process';
@@ -24,14 +24,21 @@ const { values } = parseArgs({
   strict: false,
 });
 
-const WORKSPACE = values.workdir || process.env.WORKDIR || process.cwd();
+const WORKSPACE = resolve(values.workdir || process.env.WORKDIR || process.cwd());
+
+function normalizePath(p) {
+  if (!p || typeof p !== 'string') return WORKSPACE;
+  const trimmed = p.trim();
+  if (!trimmed) return WORKSPACE;
+  return resolve(trimmed);
+}
 
 app.get('/path', (req, res) => {
   res.json({ path: WORKSPACE, cwd: WORKSPACE, home: homedir() });
 });
 
 app.get('/files', (req, res) => {
-  let p = req.query.path || WORKSPACE;
+  let p = normalizePath(req.query.path || WORKSPACE);
   try {
     const entries = readdirSync(p).map(name => {
       const full = join(p, name);
@@ -51,7 +58,7 @@ app.get('/files', (req, res) => {
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/file', async (req, res) => {
-  let p = req.query.path || WORKSPACE;
+  let p = normalizePath(req.query.path || WORKSPACE);
   try {
     const content = await fs.readFile(p, 'utf8');
     res.json({ content });
@@ -61,7 +68,7 @@ app.get('/file', async (req, res) => {
 });
 
 app.post('/file', async (req, res) => {
-  let p = req.body.path || WORKSPACE;
+  let p = normalizePath(req.body.path || WORKSPACE);
   try {
     await fs.writeFile(p, req.body.content, 'utf8');
     res.json({ ok: true });
@@ -256,6 +263,10 @@ function buildRunTokenMatchers(scriptNames) {
       `${runner} run-script ${name} `,
       `${runner} run-script ${name}`,
     ]));
+    // Common direct invocations (e.g. `npm start`, `npm test`, `yarn dev`)
+    for (const runner of ['npm', 'pnpm', 'yarn', 'bun']) {
+      tokens.push(`${runner} ${name} `, `${runner} ${name}`);
+    }
     return { name, tokens };
   });
 }
@@ -317,8 +328,15 @@ function getScriptsStatusList(p, scriptsObj) {
     }
 
     const matchers = buildRunTokenMatchers(names);
+    const targetPaths = new Set([p]);
+    try { targetPaths.add(realpathSync(p)); } catch {}
+    try { targetPaths.add(realpathSync.native?.(p) || realpathSync(p)); } catch {}
+
     for (const proc of processes) {
       if (ignoredPids.has(proc.pid)) continue;
+      // Avoid false positives from shell wrappers executing compound commands
+      // (e.g. `sh -c "npm run cf:prepare && wrangler dev"` as part of another script).
+      if (/(?:^|\s)(?:sh|bash|zsh|dash|\/bin\/sh|\/bin\/bash|\/bin\/zsh)\s+-c\s/.test(proc.cmd) && /&&|\|\||;/.test(proc.cmd)) continue;
       for (const matcher of matchers) {
         let matched = false;
         for (const token of matcher.tokens) {
@@ -330,7 +348,9 @@ function getScriptsStatusList(p, scriptsObj) {
         }
         if (!matched) continue;
         const cwd = getProcessCwd(proc.pid, cwdCache);
-        if (cwd === p) result.get(matcher.name).push(proc.pid);
+        let cwdReal = cwd;
+        if (cwd) { try { cwdReal = realpathSync(cwd); } catch {} }
+        if (cwd && (targetPaths.has(cwd) || targetPaths.has(cwdReal))) result.get(matcher.name).push(proc.pid);
       }
     }
   } catch {
@@ -359,7 +379,7 @@ function getSingleScriptStatus(p, name, scriptsObj = null) {
 }
 
 app.get('/scripts', (req, res) => {
-  const p = req.query.path || WORKSPACE;
+  const p = normalizePath(req.query.path || WORKSPACE);
   const scripts = readPackageScripts(p);
   if (scripts == null) return res.status(400).json({ error: 'package.json not found or invalid' });
   res.json({ scripts: getScriptsStatusList(p, scripts) });
@@ -367,7 +387,7 @@ app.get('/scripts', (req, res) => {
 
 app.post('/scripts/start', (req, res) => {
   const { path: pRaw, name } = req.body || {};
-  const p = pRaw || WORKSPACE;
+  const p = normalizePath(pRaw || WORKSPACE);
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
   const scripts = readPackageScripts(p);
   if (!scripts || !(name in scripts)) return res.status(400).json({ error: 'script not found' });
@@ -425,7 +445,7 @@ app.post('/scripts/start', (req, res) => {
 
 app.post('/scripts/stop', (req, res) => {
   const { path: pRaw, name } = req.body || {};
-  const p = pRaw || WORKSPACE;
+  const p = normalizePath(pRaw || WORKSPACE);
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
   const status = getSingleScriptStatus(p, name);
   if (!status.running) return res.json({ ok: true, running: false });
@@ -449,8 +469,9 @@ app.post('/scripts/stop', (req, res) => {
 app.post('/scripts/cleanup', (req, res) => {
   const paths = Array.isArray(req.body?.paths) ? req.body.paths : [];
   const cleaned = new Set();
-  for (const p of paths) {
-    if (!p || typeof p !== 'string') continue;
+  for (const raw of paths) {
+    if (!raw || typeof raw !== 'string') continue;
+    const p = normalizePath(raw);
     const prefix = `${p}::`;
     for (const key of [...scriptLastRuns.keys()]) {
       if (key.startsWith(prefix)) scriptLastRuns.delete(key);
@@ -467,8 +488,8 @@ app.post('/scripts/cleanup', (req, res) => {
 
 app.all('/git/:action', (req, res) => {
   const { action } = req.params;
-  const { path, file, files, message } = req.body;
-  const p = path || WORKSPACE;
+  const { path, file, files, message } = req.body || {};
+  const p = normalizePath(path || WORKSPACE);
 
   try {
     switch (action) {

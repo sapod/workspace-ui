@@ -22,6 +22,24 @@ function saveOpenSession(projId, sessId) {
   try { localStorage.setItem(SESSION_STORE, JSON.stringify({ projectId: projId, sessionId: sessId })); } catch {}
 }
 
+function normalizeAbsPath(p) {
+  if (!p || typeof p !== 'string') return p;
+  const prefix = p.startsWith('/') ? '/' : '';
+  const parts = p.split('/');
+  const stack = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (stack.length && stack[stack.length - 1] !== '..') stack.pop();
+      else if (!prefix) stack.push('..');
+      continue;
+    }
+    stack.push(part);
+  }
+  const joined = (prefix + stack.join('/')) || prefix || '.';
+  return joined.replace(/\/+$/, '') || '/';
+}
+
 // The V2 server rejects relative and `~` directories with a blank 500, so
 // every project path is resolved to an absolute path before it is stored/sent.
 function resolveProjectPath(input, { root = '', home = '' } = {}) {
@@ -31,11 +49,13 @@ function resolveProjectPath(input, { root = '', home = '' } = {}) {
   // helper server has not been restarted with the new `home` field yet.
   const homePath = (home || (rootPath.includes('/workspace/') ? rootPath.slice(0, rootPath.indexOf('/workspace/')) : '')).replace(/\/+$/, '');
   if (!raw) return root || '';
-  if (raw === '~') return homePath || raw;
-  if (raw.startsWith('~/')) return homePath ? `${homePath}/${raw.slice(2)}` : raw;
-  if (raw.startsWith('/')) return raw;
-  if (raw.startsWith('./')) return rootPath ? `${rootPath}/${raw.slice(2)}` : raw;
-  return rootPath ? `${rootPath}/${raw}` : raw;
+  let out = raw;
+  if (raw === '~') out = homePath || raw;
+  else if (raw.startsWith('~/')) out = homePath ? `${homePath}/${raw.slice(2)}` : raw;
+  else if (raw.startsWith('/')) out = raw;
+  else if (raw.startsWith('./')) out = rootPath ? `${rootPath}/${raw.slice(2)}` : raw;
+  else out = rootPath ? `${rootPath}/${raw}` : raw;
+  return out.startsWith('/') ? normalizeAbsPath(out) : out;
 }
 
 const SLASHES = [
@@ -916,20 +936,34 @@ function App() {
 
   async function loadGitStatus(proj) {
     if (!proj) return;
-    const pi = await oc.getPath();
+    const pi = workspace?.root ? { path: workspace.root, cwd: workspace.root } : await oc.getPath();
     if (!pi) return;
+    const ws = { root: pi?.cwd ?? pi?.path ?? '', home: workspace?.home ?? pi?.home ?? '' };
+    const candidates = [];
+    if (proj.path) candidates.push(resolveProjectPath(proj.path, ws));
     const workdir = pi?.cwd ?? pi?.path ?? '';
     const parentDir = workdir.replace('/workspace-ui', '');
-    const path1 = workdir + '/' + proj.name;
-    const path2 = parentDir + '/' + proj.name;
-    let files = await git.getGitStatus(path1);
-    let fullPath = path1;
-    if (!Array.isArray(files) || files.length === 0) {
-      files = await git.getGitStatus(path2);
-      fullPath = path2;
+    candidates.push(normalizeAbsPath(workdir + '/' + proj.name));
+    if (parentDir && parentDir !== workdir) candidates.push(normalizeAbsPath(parentDir + '/' + proj.name));
+
+    let files = null;
+    let fullPath = '';
+    let lastErr = null;
+    for (const p of [...new Set(candidates.filter(Boolean))]) {
+      try {
+        const res = await git.getGitStatus(p);
+        files = Array.isArray(res) ? res : [];
+        fullPath = p;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
     }
-    if (!fullPath) return;
-    setDiffView({ active: true, files: Array.isArray(files) ? files : [], selectedFile: null, loading: false, projectPath: fullPath });
+    if (!fullPath) {
+      toast('Could not load git status: ' + (lastErr?.message || 'unknown error'));
+      return;
+    }
+    setDiffView({ active: true, files, selectedFile: null, loading: false, projectPath: fullPath });
   }
 
   async function refreshGitStatus() {

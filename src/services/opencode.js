@@ -380,6 +380,22 @@ class OpencodeService {
     return r?.data ?? r;
   }
 
+  async renameSession(id, title) {
+    // Best-effort: API shape varies across OpenCode versions.
+    const attempts = [
+      () => request(`/session/${encodeURIComponent(id)}`, { method: 'PATCH', body: { title } }),
+      () => request(`/session/${encodeURIComponent(id)}/title`, { method: 'POST', body: { title } }),
+      () => request(`/session/${encodeURIComponent(id)}/rename`, { method: 'POST', body: { title } }),
+    ];
+    for (const attempt of attempts) {
+      try {
+        const r = await attempt();
+        return r?.data ?? r;
+      } catch {}
+    }
+    return null;
+  }
+
   async deleteSession(id) {
     return request(`/session/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }

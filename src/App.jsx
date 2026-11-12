@@ -8,6 +8,15 @@ import './App.css';
 
 const STORE = 'oc_projects_v1';
 const SESSION_STORE = 'oc_open_session_v1';
+const TITLER_SESSION_STORE = 'oc_titler_session_v1';
+const FIRST_NAMING_MSG_STORE = 'oc_first_naming_msg_v1';
+
+let titlerQueue = Promise.resolve();
+function enqueueTitler(task) {
+  const run = titlerQueue.then(task, task);
+  titlerQueue = run.catch(() => {});
+  return run;
+}
 
 function loadProjects() {
   try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { return []; }
@@ -20,6 +29,63 @@ function loadOpenSession() {
 }
 function saveOpenSession(projId, sessId) {
   try { localStorage.setItem(SESSION_STORE, JSON.stringify({ projectId: projId, sessionId: sessId })); } catch {}
+}
+function loadTitlerSessionId() {
+  try { return localStorage.getItem(TITLER_SESSION_STORE) || null; } catch { return null; }
+}
+function saveTitlerSessionId(id) {
+  try { if (id) localStorage.setItem(TITLER_SESSION_STORE, id); else localStorage.removeItem(TITLER_SESSION_STORE); } catch {}
+}
+function loadFirstNamingMessages() {
+  try { return JSON.parse(localStorage.getItem(FIRST_NAMING_MSG_STORE) || '{}') || {}; } catch { return {}; }
+}
+function saveFirstNamingMessages(map) {
+  try { localStorage.setItem(FIRST_NAMING_MSG_STORE, JSON.stringify(map || {})); } catch {}
+}
+function getFirstNamingMessage(sessId) {
+  if (!sessId) return '';
+  const map = loadFirstNamingMessages();
+  return typeof map[sessId] === 'string' ? map[sessId] : '';
+}
+function setFirstNamingMessage(sessId, text) {
+  if (!sessId || !text) return;
+  const map = loadFirstNamingMessages();
+  if (typeof map[sessId] === 'string' && map[sessId]) return;
+  map[sessId] = text;
+  saveFirstNamingMessages(map);
+}
+function clearFirstNamingMessage(sessId) {
+  if (!sessId) return;
+  const map = loadFirstNamingMessages();
+  if (!(sessId in map)) return;
+  delete map[sessId];
+  saveFirstNamingMessages(map);
+}
+
+function titleFromAssistantMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m?.info?.role !== 'assistant') continue;
+    const text = (m.parts || [])
+      .filter(p => p?.type === 'text' && typeof p.text === 'string')
+      .map(p => p.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function limitTitleWords(text, maxWords = 5) {
+  const cleaned = (text || '')
+    .replace(/[`"'*_#>[\](){}]/g, ' ')
+    .replace(/[^\p{L}\p{N}\s-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  return cleaned.split(' ').filter(Boolean).slice(0, maxWords).join(' ');
 }
 
 function normalizeAbsPath(p) {
@@ -646,6 +712,7 @@ function App() {
   const scriptsMenuRef = useRef(null);
   const scriptsSessionStartRef = useRef(Date.now());
   const scriptsReqIdRef = useRef(0);
+  const firstUserMessageForNamingRef = useRef({});
 
   function loadRecentScriptsMap() {
     try { return JSON.parse(localStorage.getItem(SCRIPTS_RECENT_STORE) || '{}'); } catch { return {}; }
@@ -841,8 +908,19 @@ function App() {
   async function refreshSessions() {
     try {
       const r = await oc.listSessions();
-      setOcSessions(Array.isArray(r) ? r : []);
-    } catch { setOcSessions([]); }
+      const next = Array.isArray(r) ? r : [];
+      setOcSessions(prev => {
+        const prevList = Array.isArray(prev) ? prev : [];
+        if (!prevList.length) return next;
+        const byId = new Set(next.map(s => s?.id).filter(Boolean));
+        // Preserve locally known sessions (e.g. just-created) if the server list
+        // is temporarily stale, so linked sessions remain visible/selectable.
+        const keep = prevList.filter(s => s?.id && !byId.has(s.id));
+        return keep.length ? [...next, ...keep] : next;
+      });
+    } catch {
+      // Keep existing session metadata on transient failures.
+    }
   }
 
   async function loadMessages(sessId) {
@@ -856,9 +934,9 @@ function App() {
   }
 
   function projSessions(proj) {
-    return (proj.sessionIds ?? [])
-      .map(id => ocSessions.find(s => s.id === id))
-      .filter(Boolean);
+    return (proj.sessionIds ?? []).map(id =>
+      ocSessions.find(s => s.id === id) || { id, title: null, _missing: true }
+    );
   }
 
   function addProject({ name, path }) {
@@ -950,18 +1028,30 @@ function App() {
 
   async function newSessionInProject(proj) {
     try {
-      const title = proj.name + ' · ' + new Date().toLocaleDateString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      // Keep the initial title neutral so the session can be auto-named from the
+      // first in-app user message (v1 behavior), instead of being pinned to
+      // "project · date". The display falls back to a short id until renamed.
+      const title = 'New session';
       const directory = resolveProjectPath(proj.path, workspace);
       const s = await oc.createSession(title, { directory: directory || undefined, model: DEFAULT_SESSION_MODEL });
       if (!s?.id) throw new Error('Session creation returned no id');
-      const nextProjects = projects.map(p => {
-        if (p.id !== proj.id) return p;
-        const updated = { ...p, sessionIds: p.sessionIds.includes(s.id) ? p.sessionIds : [...p.sessionIds, s.id] };
-        if (directory && directory !== proj.path) updated.path = directory;
-        return updated;
+      setProjects(prev => {
+        const next = prev.map(p => {
+          if (p.id !== proj.id) return p;
+          const updated = { ...p, sessionIds: p.sessionIds.includes(s.id) ? p.sessionIds : [...p.sessionIds, s.id] };
+          if (directory && directory !== proj.path) updated.path = directory;
+          return updated;
+        });
+        saveProjects(next);
+        return next;
       });
-      setProjects(nextProjects);
-      saveProjects(nextProjects);
+      setExpandedIds(prev => new Set([...prev, proj.id]));
+      // Ensure the newly created session is known locally even if the sessions
+      // list is briefly stale/incomplete, so it appears in the sidebar immediately.
+      setOcSessions(prev => {
+        const list = Array.isArray(prev) ? prev : [];
+        return list.some(x => x.id === s.id) ? list : [s, ...list];
+      });
       await refreshSessions();
       setSelectedModel(DEFAULT_SESSION_MODEL);
       await selectSession(proj.id, s.id);
@@ -1149,7 +1239,88 @@ async function handleCommitConfirm() {
     await doSend(text);
   }
 
+  async function ensureTitlerSession() {
+    const rootDir = workspace?.root || (await oc.getPath().catch(() => null))?.path || (await oc.getPath().catch(() => null))?.cwd || '';
+    const directory = rootDir ? resolveProjectPath(rootDir, workspace) : undefined;
+
+    // Use a fresh titler session for each naming request so prior context never
+    // leaks into the next title. Keep the latest id in storage for reuse/cleanup.
+    const prevId = loadTitlerSessionId();
+    if (prevId) {
+      saveTitlerSessionId(null);
+      try { await oc.deleteSession(prevId); } catch {}
+    }
+
+    const created = await oc.createSession('Titler', {
+      directory: directory || undefined,
+      model: DEFAULT_SESSION_MODEL,
+    });
+    if (!created?.id) throw new Error('Failed to create titler session');
+    saveTitlerSessionId(created.id);
+    return created.id;
+  }
+
+  async function generateSessionTitleWithModel(userText) {
+    try {
+      return await enqueueTitler(async () => {
+        const titlerId = await ensureTitlerSession();
+        const prompt =
+          'Generate a short, descriptive chat session title for the following user message.\n' +
+          'Rules: return ONLY the title, at most 5 words, no quotes, no punctuation, no prefix/suffix.\n\n' +
+          `User message:\n${userText}`;
+        await oc.sendMessage(titlerId, prompt, { model: DEFAULT_SESSION_MODEL, resume: true, handlers: {} });
+        const msgs = await oc.listMessages(titlerId);
+        const raw = titleFromAssistantMessages(msgs);
+        const title = limitTitleWords(raw, 5);
+        return title || '';
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  async function autoNameSession(sessId, userText, fallbackTitle = '') {
+    if (!sessId || !userText) return;
+    try {
+      const latest = await oc.getSession(sessId).catch(() => null);
+      const currentTitle = latest?.title ?? fallbackTitle ?? '';
+      if (currentTitle && currentTitle !== 'New session') {
+        clearFirstNamingMessage(sessId);
+        delete firstUserMessageForNamingRef.current[sessId];
+        return;
+      }
+      const title = await generateSessionTitleWithModel(userText);
+      if (!title) return;
+      await oc.renameSession(sessId, title).catch(() => null);
+      await refreshSessions();
+      // Clear stored first prompt only when the session is no longer using the
+      // placeholder name, so failed/unsupported renames can be retried correctly.
+      const after = await oc.getSession(sessId).catch(() => null);
+      const afterTitle = after?.title ?? '';
+      if (afterTitle && afterTitle !== 'New session') {
+        clearFirstNamingMessage(sessId);
+        delete firstUserMessageForNamingRef.current[sessId];
+      }
+    } catch {}
+  }
+
   async function doSend(text, model) {
+    const sessIdAtSend = curSessId;
+    const sessAtSend = ocSessions.find(s => s.id === sessIdAtSend);
+    const shouldAutoName = !sessAtSend || !sessAtSend.title || sessAtSend.title === 'New session';
+    if (shouldAutoName && sessIdAtSend && text) {
+      // Persist the first in-app user message for titling across reloads, so a
+      // later retry (while still "New session") never uses a follow-up message.
+      if (!firstUserMessageForNamingRef.current[sessIdAtSend]) {
+        const stored = getFirstNamingMessage(sessIdAtSend);
+        if (stored) firstUserMessageForNamingRef.current[sessIdAtSend] = stored;
+      }
+      if (!firstUserMessageForNamingRef.current[sessIdAtSend]) {
+        firstUserMessageForNamingRef.current[sessIdAtSend] = text;
+        setFirstNamingMessage(sessIdAtSend, text);
+      }
+    }
+
     setThinking(true);
     const optMsg = { info: { role: 'user', id: '_opt_' + Date.now() }, parts: [{ type: 'text', text }] };
     setMessages(prev => [...(prev ?? []), optMsg]);
@@ -1157,9 +1328,23 @@ async function handleCommitConfirm() {
     const modelOverride = model || selectedModel;
     try {
       const handlers = getMessageHandlers();
-      await oc.sendMessage(curSessId, text, { model: modelOverride, handlers });
+      await oc.sendMessage(sessIdAtSend, text, { model: modelOverride, handlers });
       setThinking(false);
-      await loadMessages(curSessId);
+      await loadMessages(sessIdAtSend);
+
+      // Pick up server-side auto-rename if v2 provides it.
+      await refreshSessions();
+      if (shouldAutoName) {
+        setTimeout(() => { refreshSessions(); }, 1500);
+        // Generate a short (<=5 words) title via a reusable root-level titler
+        // session and rename if the session is still using the placeholder name.
+        // Always use the same first in-app user message (not later follow-ups).
+        const namingText =
+          firstUserMessageForNamingRef.current[sessIdAtSend] ||
+          getFirstNamingMessage(sessIdAtSend) ||
+          text;
+        void autoNameSession(sessIdAtSend, namingText, sessAtSend?.title || '');
+      }
     } catch (e) {
       setThinking(false);
       setMessages(prev => [...(prev ?? []),
@@ -1247,16 +1432,18 @@ async function handleCommitConfirm() {
 
   function saveProjectPreviewState(projId, { port, open, useProxy } = {}) {
     if (!projId) return;
-    const next = projects.map(p => {
-      if (p.id !== projId) return p;
-      const updated = { ...p };
-      if (port !== undefined) updated.previewPort = port;
-      if (open !== undefined) updated.previewOpen = open;
-      if (useProxy !== undefined) updated.previewProxy = useProxy;
-      return updated;
+    setProjects(prev => {
+      const next = prev.map(p => {
+        if (p.id !== projId) return p;
+        const updated = { ...p };
+        if (port !== undefined) updated.previewPort = port;
+        if (open !== undefined) updated.previewOpen = open;
+        if (useProxy !== undefined) updated.previewProxy = useProxy;
+        return updated;
+      });
+      saveProjects(next);
+      return next;
     });
-    setProjects(next);
-    saveProjects(next);
   }
 
   function clearPreviewConsole() {
@@ -1609,7 +1796,7 @@ async function handleCommitConfirm() {
                       <div key={s.id}
                         className={`sess-row${s.id === curSessId ? ' active' : ''}`}
                         onClick={() => selectSession(proj.id, s.id)}>
-                        <span className="sess-name">{s.title ?? s.id.slice(0, 14) + '…'}</span>
+                        <span className="sess-name">{s.title ?? (s._missing ? 'Loading…' : s.id.slice(0, 14) + '…')}</span>
                         <button className="sess-del" onClick={e => { e.stopPropagation(); unlinkSession(proj.id, s.id); }}>✕</button>
                       </div>
                     ))}

@@ -353,7 +353,8 @@ function MessageInput({ value = '', onValueChange, onSend, disabled, selectedMod
           <textarea ref={ta} className="msg-ta" rows={1}
             placeholder="Message opencode… (/ for commands)"
             value={value} onChange={onChange} onKeyDown={onKey}
-            onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
+            onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+            disabled={disabled} />
           <div className="inp-foot">
             <span className="inp-hint"><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> history</span>
             <span className={`inp-model${modelLoading ? ' inp-model-loading' : ''}`}>
@@ -367,7 +368,7 @@ function MessageInput({ value = '', onValueChange, onSend, disabled, selectedMod
   );
 }
 
-function Thread({ messages, thinking, contextPath }) {
+function Thread({ messages, thinking, contextPath, hasProject }) {
   const bot = useRef();
   const atBottom = useRef(true);
 
@@ -387,8 +388,17 @@ function Thread({ messages, thinking, contextPath }) {
       <div className="thread" onScroll={handleScroll}>
         <div className="empty">
           <div className="empty-orb">◈</div>
-          <div className="empty-h">No session open</div>
-          <div className="empty-p">Select a project and session from the menu, or create a new one.</div>
+          {hasProject ? (
+            <>
+              <div className="empty-h">Choose a session</div>
+              <div className="empty-p">Select a session from the menu, or create a new one for this project.</div>
+            </>
+          ) : (
+            <>
+              <div className="empty-h">No session open</div>
+              <div className="empty-p">Select a project and session from the menu, or create a new one.</div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -889,7 +899,37 @@ function App() {
     if (curSessId === sessId) { setCurSessId(null); setMessages(null); }
   }
 
+  function closePreviewPane(persistForProjId = curProjId) {
+    detachPreviewConsole();
+    setPreviewConsoleOpen(false);
+    setPreviewLogs([]);
+    setPreviewConsoleStatus('');
+    setPreview(p => ({ ...p, open: false }));
+    if (persistForProjId) saveProjectPreviewState(persistForProjId, { open: false });
+  }
+
+  async function selectProjectOnly(proj) {
+    if (!proj) return;
+    const sameProjectWithSession = curProjId === proj.id && !!curSessId;
+    closePreviewPane(curProjId);
+    setCurProjId(proj.id);
+    setDrawerOpen(false);
+    setExpandedIds(prev => new Set([...prev, proj.id]));
+    if (sameProjectWithSession) {
+      setDiffView({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
+    } else {
+      setCurSessId(null);
+      setMessages(null);
+      setThinking(false);
+      setSessionLoading(false);
+      setModelLoading(false);
+      setDiffView({ active: false, files: [], selectedFile: null, loading: false, projectPath: null, selectedFiles: [] });
+    }
+    await refreshSessions();
+  }
+
   async function selectSession(projId, sessId) {
+    closePreviewPane(curProjId);
     setCurProjId(projId);
     setCurSessId(sessId);
     setMessages(null);
@@ -973,7 +1013,18 @@ function App() {
       toast('Could not load git status: ' + (lastErr?.message || 'unknown error'));
       return;
     }
-    setDiffView({ active: true, files, selectedFile: null, loading: false, projectPath: fullPath });
+    const keepSession = curProjId === proj.id && !!curSessId;
+    closePreviewPane(curProjId);
+    setCurProjId(proj.id);
+    setExpandedIds(prev => new Set([...prev, proj.id]));
+    if (!keepSession) {
+      setCurSessId(null);
+      setMessages(null);
+      setThinking(false);
+      setSessionLoading(false);
+      setModelLoading(false);
+    }
+    setDiffView({ active: true, files, selectedFile: null, loading: false, projectPath: fullPath, selectedFiles: [] });
   }
 
   async function refreshGitStatus() {
@@ -1326,7 +1377,7 @@ async function handleCommitConfirm() {
   useEffect(() => () => detachPreviewConsole(), []);
 
   function openPreview() {
-    if (!curSessId || thinking) return;
+    if (!curProjId || thinking) return;
     let port = getProjectPreviewPort(curProjId) || preview.port;
     if (!port) {
       const input = window.prompt('Enter port for web preview', '3000');
@@ -1541,8 +1592,9 @@ async function handleCommitConfirm() {
             return (
               <div key={proj.id} className="proj-group">
                 <div className={`proj-row${curProjId === proj.id ? ' active-proj' : ''}`}
-                  onClick={() => { toggleExpand(proj.id); }}>
-                  <span className={`proj-chevron${isExpanded ? ' open' : ''}`}>›</span>
+                  onClick={() => { selectProjectOnly(proj); }}>
+                  <span className={`proj-chevron${isExpanded ? ' open' : ''}`}
+                    onClick={e => { e.stopPropagation(); toggleExpand(proj.id); }}>›</span>
                   <span className="proj-ico">📁</span>
                   <div className="proj-info">
                     <div className="proj-name">{proj.name}</div>
@@ -1721,7 +1773,7 @@ async function handleCommitConfirm() {
                   <span className="tb-status thinking">● thinking</span>
                   <button className="tb-abort" onClick={abort}>■ stop</button>
                 </>
-              ) : curSessId ? (
+              ) : curProj ? (
                 <button className="tb-preview" onClick={openPreview} title={preview.port ? `Open preview (:${preview.port})` : 'Open web preview'}>👁</button>
               ) : null}
             </div>
@@ -1797,6 +1849,7 @@ async function handleCommitConfirm() {
                 messages={messages}
                 thinking={thinking}
                 contextPath={curProj?.path ?? null}
+                hasProject={!!curProj}
               />
             )}
 
